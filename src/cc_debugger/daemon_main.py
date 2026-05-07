@@ -1,0 +1,680 @@
+#!/usr/bin/env python3
+"""Debug daemon main entry point."""
+
+import json
+import logging
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from queue import Empty, Queue
+from typing import Any
+
+logger = logging.getLogger("cc_debugger.daemon")
+
+SESSION_DIR = Path.home() / ".cc-debugger" / "sessions"
+DAEMON_PORT_FILE = SESSION_DIR / "daemon.port"
+DAEMON_PID_FILE = SESSION_DIR / "daemon.pid"
+
+
+class DebugSession:
+    """Manages the debugpy connection."""
+
+    def __init__(self) -> None:
+        self.adapter_process: subprocess.Popen[bytes] | None = None
+        self.sock: socket.socket | None = None
+        self.sock_file: Any = None
+        self.seq: int = 0
+        self.pending: dict[int, Queue[dict[str, Any]]] = {}
+        self.events: Queue[dict[str, Any]] = Queue()
+        self._running: bool = False
+        self._reader_thread: threading.Thread | None = None
+        self.thread_id: int | None = None
+        self.target_file: str | None = None
+        self._events_lock = threading.Lock()  # Protects event queue operations
+
+    def start(self, target_file: str, args: list[str], stop_on_entry: bool = True) -> dict[str, Any]:
+        """Start debug session."""
+        self.target_file = target_file
+
+        # Find free port for adapter
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            adapter_port = s.getsockname()[1]
+
+        # Start adapter
+        self.adapter_process = subprocess.Popen(
+            [sys.executable, "-m", "debugpy.adapter", "--host", "127.0.0.1", "--port", str(adapter_port)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Connect with retries
+        time.sleep(0.5)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connected = False
+        for _ in range(20):
+            try:
+                self.sock.connect(("127.0.0.1", adapter_port))
+                connected = True
+                break
+            except ConnectionRefusedError:
+                time.sleep(0.1)
+
+        if not connected:
+            self.sock.close()
+            self.sock = None
+            if self.adapter_process:
+                self.adapter_process.terminate()
+            raise ConnectionError("Could not connect to adapter")
+
+        self.sock_file = self.sock.makefile("rwb")
+        self._running = True
+
+        # Start reader BEFORE sending any messages
+        self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader_thread.start()
+        time.sleep(0.1)  # Give reader time to start
+
+        # Initialize
+        self._send("initialize", {
+            "clientID": "cc-debugger",
+            "adapterID": "python",
+            "pathFormat": "path",
+            "linesStartAt1": True,
+            "supportsVariableType": True,
+        })
+        time.sleep(0.2)  # Wait for response
+
+        # Launch
+        self._send("launch", {
+            "program": target_file,
+            "args": args,
+            "cwd": str(Path(target_file).parent),
+            "stopOnEntry": stop_on_entry,
+            "console": "internalConsole",
+            "justMyCode": True,
+        })
+        time.sleep(0.2)
+
+        # ConfigurationDone
+        self._send("configurationDone", {})
+
+        # Wait for stopped event with longer timeout
+        ev = self._wait_event("stopped", timeout=60)
+        self.thread_id = ev["body"].get("threadId", 1)
+
+        return ev
+
+    def _read_loop(self) -> None:
+        """Background message reader."""
+        while self._running:
+            try:
+                if not self.sock_file:
+                    return
+                header = b""
+                while b"\r\n\r\n" not in header:
+                    b = self.sock_file.read(1)
+                    if not b:
+                        return
+                    header += b
+
+                length = 0
+                for line in header.decode().split("\r\n"):
+                    if line.startswith("Content-Length:"):
+                        length = int(line.split(":")[1].strip())
+                        break
+                else:
+                    continue
+
+                body = self.sock_file.read(length).decode()
+                msg = json.loads(body)
+
+                mtype = msg.get("type")
+
+                if mtype == "response":
+                    seq = msg.get("request_seq")
+                    if seq in self.pending:
+                        self.pending[seq].put(msg)
+                elif mtype == "event":
+                    with self._events_lock:
+                        self.events.put(msg)
+            except (json.JSONDecodeError, OSError, ValueError):
+                if self._running:
+                    continue
+                break
+
+    def _send(self, command: str, args: dict[str, Any]) -> int:
+        """Send DAP request."""
+        self.seq += 1
+        msg = {"seq": self.seq, "type": "request", "command": command, "arguments": args}
+        body = json.dumps(msg)
+        header = f"Content-Length: {len(body)}\r\n\r\n"
+        if self.sock_file:
+            self.sock_file.write(header.encode() + body.encode())
+            self.sock_file.flush()
+        return self.seq
+
+    def _recv_response(self, seq: int | None = None, timeout: float = 30) -> dict[str, Any]:
+        """Wait for response."""
+        if seq is None:
+            seq = self.seq
+        if seq not in self.pending:
+            self.pending[seq] = Queue()
+        try:
+            return self.pending[seq].get(timeout=timeout)
+        except Empty:
+            raise TimeoutError("Response timeout") from None
+        finally:
+            if seq in self.pending:
+                del self.pending[seq]
+
+    def _wait_event(self, event_type: str, timeout: float | None = None) -> dict[str, Any]:
+        """Wait for event."""
+        pending: list[dict[str, Any]] = []
+        while True:
+            try:
+                ev = self.events.get(timeout=timeout)
+            except Empty:
+                with self._events_lock:
+                    for e in pending:
+                        self.events.put(e)
+                raise TimeoutError(f"Event {event_type} timeout") from None
+
+            if ev.get("event") == event_type:
+                with self._events_lock:
+                    for e in pending:
+                        self.events.put(e)
+                return ev
+            pending.append(ev)
+
+    def send_and_wait(self, command: str, args: dict[str, Any], timeout: float = 30) -> dict[str, Any]:
+        """Send request and wait for response."""
+        seq = self._send(command, args)
+        self.pending[seq] = Queue()
+        return self._recv_response(seq, timeout)
+
+    def step_and_wait(self, step_type: str, timeout: float = 30) -> dict[str, Any]:
+        """Execute step and wait for stopped."""
+        self._send(step_type, {"threadId": self.thread_id})
+        return self._wait_event("stopped", timeout)
+
+    def get_location(self) -> dict[str, Any]:
+        """Get current location."""
+        resp = self.send_and_wait("stackTrace", {"threadId": self.thread_id, "levels": 1})
+        frames = resp.get("body", {}).get("stackFrames", [])
+        if frames:
+            f = frames[0]
+            return {
+                "file": f.get("source", {}).get("path"),
+                "line": f.get("line"),
+                "function": f.get("name"),
+            }
+        return {"file": self.target_file, "line": 1, "function": "<module>"}
+
+    def terminate(self) -> None:
+        """Terminate session."""
+        self._running = False
+        try:
+            self._send("disconnect", {"terminateDebuggee": True})
+        except (OSError, BrokenPipeError, TimeoutError) as e:
+            logger.debug("Disconnect failed (expected during shutdown): %s", e)
+        if self.adapter_process:
+            try:
+                self.adapter_process.terminate()
+                self.adapter_process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    self.adapter_process.kill()
+                except OSError as e:
+                    logger.debug("Kill failed (process already dead): %s", e)
+
+
+
+class DaemonServer:
+    """Server that accepts commands from CLI."""
+
+    def __init__(self, port: int):
+        self.port = port
+        self.session = None
+        self._running = False
+        self.prev_vars: dict[str, tuple[str, str]] = {}  # name -> (type, value)
+        self.watches: dict[str, str | None] = {}  # expression -> last value
+        # Recording state
+        self.recording = False
+        self.checkpoints: list[dict] = []
+        self.checkpoint_idx = -1
+        self.auto_interval = 0
+        self.steps_since_checkpoint = 0
+        self.checkpoint_size_bytes = 0
+        self.max_checkpoint_bytes = 50 * 1024 * 1024  # 50MB limit
+
+    def _get_current_vars(self) -> dict[str, tuple[str, str]]:
+        """Get current local variables as dict."""
+        if not self.session:
+            return {}
+        stack = self.session.send_and_wait("stackTrace", {"threadId": self.session.thread_id, "levels": 1})
+        frames = stack.get("body", {}).get("stackFrames", [])
+        if not frames:
+            return {}
+        frame_id = frames[0]["id"]
+        scopes = self.session.send_and_wait("scopes", {"frameId": frame_id})
+        result = {}
+        for scope in scopes.get("body", {}).get("scopes", []):
+            if scope["name"] in ("Locals", "Arguments"):
+                vars_resp = self.session.send_and_wait("variables", {
+                    "variablesReference": scope["variablesReference"]
+                })
+                for v in vars_resp.get("body", {}).get("variables", []):
+                    if not v["name"].startswith("special ") and not v["name"].startswith("function "):
+                        result[v["name"]] = (v.get("type", ""), v["value"])
+        return result
+
+    def _detect_changes(self) -> list[str]:
+        """Detect changed variables since last check."""
+        current = self._get_current_vars()
+        changed = []
+        for name, (vtype, value) in current.items():
+            if name not in self.prev_vars:
+                changed.append(name)
+            elif self.prev_vars[name] != (vtype, value):
+                changed.append(name)
+        self.prev_vars = current
+        return changed
+
+    def _eval_watches(self) -> dict[str, dict]:
+        """Evaluate all watch expressions."""
+        if not self.session:
+            return {}
+        stack = self.session.send_and_wait("stackTrace", {"threadId": self.session.thread_id, "levels": 1})
+        frame_id = stack.get("body", {}).get("stackFrames", [{}])[0].get("id", 0)
+        results = {}
+        for expr, prev_value in self.watches.items():
+            try:
+                resp = self.session.send_and_wait("evaluate", {
+                    "expression": expr,
+                    "frameId": frame_id,
+                    "context": "watch",
+                })
+                new_value = resp.get("body", {}).get("result")
+                new_type = resp.get("body", {}).get("type")
+                results[expr] = {
+                    "value": new_value,
+                    "type": new_type,
+                    "changed": prev_value is not None and new_value != prev_value,
+                }
+                self.watches[expr] = new_value
+            except Exception as e:
+                results[expr] = {"value": None, "type": None, "error": str(e), "changed": False}
+        return results
+
+    def _create_checkpoint(self, reason: str = "manual") -> dict:
+        """Create a checkpoint from current state."""
+        from uuid import uuid4
+        loc = self.session.get_location() if self.session else {}
+        variables = dict(self.prev_vars)  # Copy current vars
+        watches = self._eval_watches() if self.watches else {}
+
+        checkpoint = {
+            "id": str(uuid4())[:8],
+            "sequence": len(self.checkpoints),
+            "timestamp": time.time(),
+            "reason": reason,
+            "location": loc,
+            "variables": {k: {"type": v[0], "value": v[1]} for k, v in variables.items()},
+            "watches": watches,
+        }
+        # Track checkpoint size for memory limiting
+        cp_size = len(json.dumps(checkpoint))
+        self.checkpoint_size_bytes += cp_size
+        self.checkpoints.append(checkpoint)
+        self.checkpoint_idx = len(self.checkpoints) - 1
+        self.steps_since_checkpoint = 0
+
+        # Enforce limits: max 100 checkpoints AND max 50MB total
+        while len(self.checkpoints) > 100 or self.checkpoint_size_bytes > self.max_checkpoint_bytes:
+            if not self.checkpoints:
+                break
+            removed = self.checkpoints.pop(0)
+            self.checkpoint_size_bytes -= len(json.dumps(removed))
+            self.checkpoint_idx -= 1
+
+        return checkpoint
+
+    def _on_step(self) -> dict | None:
+        """Called after step, maybe create auto-checkpoint."""
+        if not self.recording:
+            return None
+        self.steps_since_checkpoint += 1
+        if self.auto_interval > 0 and self.steps_since_checkpoint >= self.auto_interval:
+            return self._create_checkpoint("auto")
+        return None
+
+    def handle_command(self, cmd: dict) -> dict:
+        """Handle incoming command."""
+        action = cmd.get("action")
+
+        try:
+            if action == "start":
+                if self.session:
+                    return {"success": False, "error": "Session already active"}
+                self.session = DebugSession()
+                ev = self.session.start(
+                    cmd["target_file"],
+                    cmd.get("args", []),
+                    cmd.get("stop_on_entry", True),
+                )
+                loc = self.session.get_location()
+                return {
+                    "success": True,
+                    "stopped": {
+                        "reason": ev["body"].get("reason"),
+                        "location": loc,
+                    },
+                    "thread_id": self.session.thread_id,
+                }
+
+            elif action == "status":
+                if not self.session:
+                    return {"success": True, "state": "no_session"}
+                loc = self.session.get_location()
+                return {"success": True, "state": "stopped", "location": loc}
+
+            elif action == "continue":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                self.session._send("continue", {"threadId": self.session.thread_id})
+                ev = self.session._wait_event("stopped", timeout=None)
+                loc = self.session.get_location()
+                changed = self._detect_changes()
+                watches = self._eval_watches() if self.watches else {}
+                auto_cp = self._on_step()
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches}
+                if auto_cp:
+                    result["checkpoint"] = auto_cp
+                return result
+
+            elif action == "next":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                ev = self.session.step_and_wait("next")
+                loc = self.session.get_location()
+                changed = self._detect_changes()
+                watches = self._eval_watches() if self.watches else {}
+                auto_cp = self._on_step()
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches}
+                if auto_cp:
+                    result["checkpoint"] = auto_cp
+                return result
+
+            elif action == "step":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                ev = self.session.step_and_wait("stepIn")
+                loc = self.session.get_location()
+                changed = self._detect_changes()
+                watches = self._eval_watches() if self.watches else {}
+                auto_cp = self._on_step()
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches}
+                if auto_cp:
+                    result["checkpoint"] = auto_cp
+                return result
+
+            elif action == "stepout":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                ev = self.session.step_and_wait("stepOut")
+                loc = self.session.get_location()
+                changed = self._detect_changes()
+                watches = self._eval_watches() if self.watches else {}
+                auto_cp = self._on_step()
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches}
+                if auto_cp:
+                    result["checkpoint"] = auto_cp
+                return result
+
+            elif action == "stack":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                resp = self.session.send_and_wait("stackTrace", {
+                    "threadId": self.session.thread_id,
+                    "levels": cmd.get("levels", 20),
+                })
+                return {"success": True, "frames": resp.get("body", {}).get("stackFrames", [])}
+
+            elif action == "vars":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                # Get current frame
+                stack = self.session.send_and_wait("stackTrace", {"threadId": self.session.thread_id, "levels": 1})
+                frames = stack.get("body", {}).get("stackFrames", [])
+                if not frames:
+                    return {"success": True, "variables": {}}
+                frame_id = frames[0]["id"]
+                # Get scopes
+                scopes = self.session.send_and_wait("scopes", {"frameId": frame_id})
+                result = {}
+                for scope in scopes.get("body", {}).get("scopes", []):
+                    if scope["name"] in ("Locals", "Arguments"):
+                        vars_resp = self.session.send_and_wait("variables", {
+                            "variablesReference": scope["variablesReference"]
+                        })
+                        for v in vars_resp.get("body", {}).get("variables", []):
+                            result[v["name"]] = {"type": v.get("type"), "value": v["value"]}
+                return {"success": True, "variables": result}
+
+            elif action == "eval":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                stack = self.session.send_and_wait("stackTrace", {"threadId": self.session.thread_id, "levels": 1})
+                frame_id = stack.get("body", {}).get("stackFrames", [{}])[0].get("id", 0)
+                resp = self.session.send_and_wait("evaluate", {
+                    "expression": cmd["expression"],
+                    "frameId": frame_id,
+                    "context": "repl",
+                })
+                return {"success": True, "value": resp.get("body", {}).get("result"), "type": resp.get("body", {}).get("type")}
+
+            elif action == "bp":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                resp = self.session.send_and_wait("setBreakpoints", {
+                    "source": {"path": cmd["file"]},
+                    "breakpoints": cmd["breakpoints"],
+                })
+                return {"success": True, "breakpoints": resp.get("body", {}).get("breakpoints", [])}
+
+            elif action == "bp_exception":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                filters = []
+                if cmd.get("raised", True):
+                    filters.append("raised")
+                if cmd.get("uncaught", True):
+                    filters.append("uncaught")
+                resp = self.session.send_and_wait("setExceptionBreakpoints", {
+                    "filters": filters,
+                })
+                return {"success": True, "filters": filters}
+
+            elif action == "bp_func":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                names = cmd.get("names", [])
+                resp = self.session.send_and_wait("setFunctionBreakpoints", {
+                    "breakpoints": [{"name": n} for n in names],
+                })
+                bps = resp.get("body", {}).get("breakpoints", [])
+                return {"success": True, "breakpoints": bps}
+
+            elif action == "watch_add":
+                expr = cmd.get("expression", "")
+                if not expr:
+                    return {"success": False, "error": "Expression required"}
+                self.watches[expr] = None
+                return {"success": True, "expression": expr, "count": len(self.watches)}
+
+            elif action == "watch_list":
+                values = self._eval_watches() if self.session else {}
+                return {"success": True, "watches": list(self.watches.keys()), "values": values}
+
+            elif action == "watch_del":
+                expr = cmd.get("expression", "")
+                if expr in self.watches:
+                    del self.watches[expr]
+                    return {"success": True, "removed": expr}
+                return {"success": False, "error": f"Watch not found: {expr}"}
+
+            elif action == "watch_clear":
+                count = len(self.watches)
+                self.watches.clear()
+                return {"success": True, "removed": count}
+
+            elif action == "record_start":
+                self.recording = True
+                self.auto_interval = cmd.get("auto_interval", 0)
+                self.checkpoints = []
+                self.checkpoint_idx = -1
+                # Create initial checkpoint
+                if self.session:
+                    self._detect_changes()  # Capture current vars
+                    self._create_checkpoint("start")
+                return {"success": True, "recording": True, "auto_interval": self.auto_interval}
+
+            elif action == "record_stop":
+                self.recording = False
+                return {"success": True, "recording": False, "checkpoint_count": len(self.checkpoints)}
+
+            elif action == "record_checkpoint":
+                if not self.recording:
+                    return {"success": False, "error": "Recording not active"}
+                reason = cmd.get("reason", "manual")
+                cp = self._create_checkpoint(reason)
+                return {"success": True, "checkpoint": cp}
+
+            elif action == "record_list":
+                return {
+                    "success": True,
+                    "recording": self.recording,
+                    "checkpoints": [
+                        {"id": cp["id"], "sequence": cp["sequence"], "reason": cp["reason"],
+                         "location": cp["location"], "current": i == self.checkpoint_idx}
+                        for i, cp in enumerate(self.checkpoints)
+                    ],
+                }
+
+            elif action == "step_back":
+                if self.checkpoint_idx <= 0:
+                    return {"success": False, "error": "At oldest checkpoint"}
+                self.checkpoint_idx -= 1
+                cp = self.checkpoints[self.checkpoint_idx]
+                return {"success": True, "checkpoint": cp}
+
+            elif action == "step_forward":
+                if self.checkpoint_idx >= len(self.checkpoints) - 1:
+                    return {"success": False, "error": "At newest checkpoint"}
+                self.checkpoint_idx += 1
+                cp = self.checkpoints[self.checkpoint_idx]
+                return {"success": True, "checkpoint": cp}
+
+            elif action == "goto":
+                cp_id = cmd.get("checkpoint_id", "")
+                for i, cp in enumerate(self.checkpoints):
+                    if cp["id"] == cp_id:
+                        self.checkpoint_idx = i
+                        return {"success": True, "checkpoint": cp}
+                return {"success": False, "error": f"Checkpoint not found: {cp_id}"}
+
+            elif action == "record_export":
+                output_path = cmd.get("output_file", "")
+                if not output_path:
+                    return {"success": False, "error": "Output file required"}
+                # Security: validate path is safe (no traversal, absolute only)
+                try:
+                    resolved = Path(output_path).resolve()
+                    # Prevent path traversal - must be under home or cwd
+                    cwd = Path.cwd().resolve()
+                    home = Path.home().resolve()
+                    if not (str(resolved).startswith(str(cwd)) or str(resolved).startswith(str(home))):
+                        return {"success": False, "error": "Export path must be under home or current directory"}
+                except (ValueError, OSError) as e:
+                    return {"success": False, "error": f"Invalid path: {e}"}
+                data = {"checkpoints": self.checkpoints}
+                resolved.write_text(json.dumps(data, indent=2))
+                return {"success": True, "file": str(resolved), "checkpoint_count": len(self.checkpoints)}
+
+            elif action == "quit":
+                if self.session:
+                    self.session.terminate()
+                    self.session = None
+                self._running = False
+                return {"success": True, "message": "Session terminated"}
+
+            else:
+                return {"success": False, "error": f"Unknown action: {action}"}
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def run(self):
+        """Run the daemon."""
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", self.port))
+        server.listen(5)
+        server.settimeout(1.0)
+
+        self._running = True
+
+        while self._running:
+            try:
+                client, _ = server.accept()
+            except TimeoutError:
+                continue
+
+            try:
+                client.settimeout(300.0)  # 5 minute timeout for long operations
+                data = client.recv(65536)
+                if data:
+                    cmd = json.loads(data.decode())
+                    result = self.handle_command(cmd)
+                    client.sendall(json.dumps(result).encode())
+            except TimeoutError:
+                logger.debug("Client timed out, closing connection")
+            except Exception as e:
+                try:
+                    client.sendall(json.dumps({"success": False, "error": str(e)}).encode())
+                except OSError as e:
+                    logger.debug("Failed to send error response: %s", e)
+            finally:
+                client.close()
+
+        server.close()
+        if self.session:
+            self.session.terminate()
+
+
+def main() -> None:
+    """Main entry point for daemon."""
+    import os
+    if os.environ.get("CC_DEBUG_LOG"):
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+            filename=Path.home() / ".cc-debugger" / "daemon.log",
+        )
+
+    if len(sys.argv) < 2:
+        print("Usage: daemon_main.py <port>")
+        sys.exit(1)
+
+    port = int(sys.argv[1])
+    daemon = DaemonServer(port)
+    daemon.run()
+
+
+if __name__ == "__main__":
+    main()

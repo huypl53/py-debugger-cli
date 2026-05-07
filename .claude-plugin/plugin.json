@@ -1,0 +1,12 @@
+{
+  "name": "py-debugger",
+  "version": "1.0.0",
+  "description": "Python debugger CLI for coding agents. Debug with breakpoints, stepping, variable inspection, watch expressions, and time-travel debugging. All output is JSON for agent parsing.",
+  "author": {
+    "name": "huypl53",
+    "url": "https://github.com/huypl53"
+  },
+  "repository": "https://github.com/huypl53/py-debugger-cli",
+  "license": "MIT",
+  "keywords": ["debugger", "python", "debugging", "dap", "breakpoints", "time-travel", "cli"]
+}

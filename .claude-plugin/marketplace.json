@@ -1,0 +1,24 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "py-debugger-cli",
+  "description": "Python debugger CLI for coding agents with breakpoints, stepping, variable inspection, watch expressions, and time-travel debugging",
+  "owner": {
+    "name": "huypl53",
+    "url": "https://github.com/huypl53"
+  },
+  "plugins": [
+    {
+      "name": "py-debugger",
+      "description": "Debug Python programs with cc-debug CLI. Breakpoints, stepping, variable inspection, watch expressions, time-travel debugging. All output is JSON for agent parsing.",
+      "author": {
+        "name": "huypl53"
+      },
+      "category": "development",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/huypl53/py-debugger-cli.git"
+      },
+      "homepage": "https://github.com/huypl53/py-debugger-cli"
+    }
+  ]
+}
