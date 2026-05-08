@@ -12,11 +12,9 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
-logger = logging.getLogger("cc_debugger.daemon")
+from cc_debugger.models.session import get_session_dir
 
-SESSION_DIR = Path.home() / ".cc-debugger" / "sessions"
-DAEMON_PORT_FILE = SESSION_DIR / "daemon.port"
-DAEMON_PID_FILE = SESSION_DIR / "daemon.pid"
+logger = logging.getLogger("cc_debugger.daemon")
 
 
 class DebugSession:

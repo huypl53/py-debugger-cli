@@ -1,11 +1,30 @@
 """Session state models."""
 
+import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SESSION_DIR = Path.home() / ".cc-debugger" / "sessions"
+
+def get_session_dir() -> Path:
+    """Get session directory scoped to current working directory.
+
+    Each cwd gets its own session directory to allow multiple independent
+    debug sessions across different projects.
+    """
+    cwd = os.getcwd()
+    cwd_hash = hashlib.md5(cwd.encode()).hexdigest()[:12]
+    return Path.home() / ".cc-debugger" / "sessions" / cwd_hash
+
+
+def get_daemon_port_file() -> Path:
+    return get_session_dir() / "daemon.port"
+
+
+def get_daemon_pid_file() -> Path:
+    return get_session_dir() / "daemon.pid"
 
 
 @dataclass
@@ -78,8 +97,8 @@ class SessionState:
     recording_id: str | None = None
 
     def save(self) -> None:
-        SESSION_DIR.mkdir(parents=True, exist_ok=True)
-        path = SESSION_DIR / f"{self.id}.json"
+        get_session_dir().mkdir(parents=True, exist_ok=True)
+        path = get_session_dir() / f"{self.id}.json"
         data = {
             "id": self.id,
             "target_file": self.target_file,
@@ -100,7 +119,7 @@ class SessionState:
 
     @classmethod
     def load(cls, session_id: str) -> "SessionState":
-        path = SESSION_DIR / f"{session_id}.json"
+        path = get_session_dir() / f"{session_id}.json"
         data = json.loads(path.read_text())
         breakpoints = [BreakpointState.from_dict(bp) for bp in data.get("breakpoints", [])]
         return cls(
@@ -122,15 +141,15 @@ class SessionState:
 
     @classmethod
     def get_active(cls) -> "SessionState | None":
-        if not SESSION_DIR.exists():
+        if not get_session_dir().exists():
             return None
-        session_files = list(SESSION_DIR.glob("*.json"))
+        session_files = list(get_session_dir().glob("*.json"))
         if not session_files:
             return None
         latest = max(session_files, key=lambda p: p.stat().st_mtime)
         return cls.load(latest.stem)
 
     def delete(self) -> None:
-        path = SESSION_DIR / f"{self.id}.json"
+        path = get_session_dir() / f"{self.id}.json"
         if path.exists():
             path.unlink()

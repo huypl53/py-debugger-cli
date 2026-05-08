@@ -12,13 +12,10 @@ from uuid import uuid4
 
 import click
 
-from cc_debugger.models.session import SESSION_DIR
+from cc_debugger.models.session import get_daemon_pid_file, get_daemon_port_file, get_session_dir
 from cc_debugger.output import format_error, format_success, output_json
 
 logger = logging.getLogger("cc_debugger.session")
-
-DAEMON_PORT_FILE = SESSION_DIR / "daemon.port"
-DAEMON_PID_FILE = SESSION_DIR / "daemon.pid"
 
 
 def _find_free_port() -> int:
@@ -30,10 +27,11 @@ def _find_free_port() -> int:
 
 def _send_to_daemon(cmd: dict, timeout: float = 300) -> dict:
     """Send command to daemon and get response."""
-    if not DAEMON_PORT_FILE.exists():
+    port_file = get_daemon_port_file()
+    if not port_file.exists():
         raise RuntimeError("No debug session running. Use 'cc-debug start' first.")
 
-    port = int(DAEMON_PORT_FILE.read_text().strip())
+    port = int(port_file.read_text().strip())
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
@@ -59,8 +57,8 @@ def _send_to_daemon(cmd: dict, timeout: float = 300) -> dict:
         return json.loads(data.decode())
     except ConnectionRefusedError:
         # Clean up stale files
-        DAEMON_PORT_FILE.unlink(missing_ok=True)
-        DAEMON_PID_FILE.unlink(missing_ok=True)
+        get_daemon_port_file().unlink(missing_ok=True)
+        get_daemon_pid_file().unlink(missing_ok=True)
         raise RuntimeError("Debug session is no longer running") from None
     finally:
         sock.close()
@@ -70,7 +68,8 @@ def _start_daemon() -> int:
     """Start daemon process and return its port."""
     port = _find_free_port()
 
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    session_dir = get_session_dir()
+    session_dir.mkdir(parents=True, exist_ok=True)
 
     # Start daemon process
     daemon_module = Path(__file__).parent.parent / "daemon_main.py"
@@ -83,8 +82,8 @@ def _start_daemon() -> int:
     )
 
     # Save daemon info
-    DAEMON_PORT_FILE.write_text(str(port))
-    DAEMON_PID_FILE.write_text(str(proc.pid))
+    get_daemon_port_file().write_text(str(port))
+    get_daemon_pid_file().write_text(str(proc.pid))
 
     # Wait for daemon to be ready
     time.sleep(0.3)
@@ -94,17 +93,20 @@ def _start_daemon() -> int:
 
 def _stop_daemon():
     """Stop the daemon process gracefully."""
+    port_file = get_daemon_port_file()
+    pid_file = get_daemon_pid_file()
+
     # Try graceful shutdown via quit command first
-    if DAEMON_PORT_FILE.exists():
+    if port_file.exists():
         try:
             _send_to_daemon({"action": "quit"}, timeout=5)
         except Exception:
             pass  # Ignore errors, will kill process below
 
     # Then kill the process
-    if DAEMON_PID_FILE.exists():
+    if pid_file.exists():
         try:
-            pid = int(DAEMON_PID_FILE.read_text().strip())
+            pid = int(pid_file.read_text().strip())
             os.kill(pid, 15)  # SIGTERM
             # Wait briefly for graceful shutdown
             import time
@@ -122,9 +124,9 @@ def _stop_daemon():
                     pass
         except (ProcessLookupError, ValueError) as e:
             logger.debug("Stop daemon failed (process already dead): %s", e)
-        DAEMON_PID_FILE.unlink(missing_ok=True)
+        pid_file.unlink(missing_ok=True)
 
-    DAEMON_PORT_FILE.unlink(missing_ok=True)
+    port_file.unlink(missing_ok=True)
 
 
 def _find_project_venv(target_file: str) -> Path | None:
