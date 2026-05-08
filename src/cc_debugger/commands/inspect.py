@@ -181,8 +181,34 @@ def vars_cmd(show_all: bool, depth: int) -> None:
 
 @click.command()
 @click.option("--clear", is_flag=True, help="Clear output buffer after reading")
-def output(clear: bool) -> None:
+@click.option("--follow", "-f", is_flag=True, help="Stream output continuously (like tail -f)")
+def output(clear: bool, follow: bool) -> None:
     """Show program stdout/stderr output."""
+    import sys
+    import time
+
+    if follow:
+        # Stream mode - print raw output continuously, no JSON
+        try:
+            while True:
+                result = _send_to_daemon({"action": "output", "clear": True}, timeout=5)
+                if not result.get("success"):
+                    # Session ended or error
+                    break
+                lines = result.get("lines", [])
+                for item in lines:
+                    content = item.get("output", "")
+                    if content:
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
+                time.sleep(0.2)  # Poll every 200ms
+        except KeyboardInterrupt:
+            pass  # Ctrl+C exits cleanly
+        except Exception:
+            pass  # Connection lost, exit
+        return
+
+    # Normal mode - return JSON
     try:
         result = _send_to_daemon({"action": "output", "clear": clear})
 
