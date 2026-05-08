@@ -116,8 +116,9 @@ cc-debug quit
 ### Session Commands
 
 ```bash
-cc-debug start <file>                              # Start debugging
+cc-debug start <file>                              # Start debugging (stops on entry)
 cc-debug start <file> --uv                         # Auto-detect venv, install debugpy
+cc-debug start <file> --no-stop                    # Start without stopping (for servers)
 cc-debug start <file> --python .venv/bin/python   # Debug with specific interpreter
 cc-debug quit                                      # End session
 cc-debug status                                    # Show session state
@@ -126,6 +127,8 @@ cc-debug pm <traceback-file>                       # Post-mortem debug from cras
 ```
 
 **Recommended:** Use `--uv` flag for projects with their own venv - it auto-detects the venv and installs debugpy if needed.
+
+**For servers:** Use `--no-stop` to start without stopping on entry. Set breakpoints and the debugger will stop when hit.
 
 ### Execution Control
 
@@ -171,6 +174,7 @@ cc-debug source -n 10       # Show 10 lines of context
 cc-debug source app.py:100  # Show source at specific location
 cc-debug output             # Show program stdout/stderr
 cc-debug output --clear     # Clear output buffer after reading
+cc-debug output -f          # Stream output continuously (like tail -f)
 ```
 
 ### Watch Expressions

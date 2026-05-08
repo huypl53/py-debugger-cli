@@ -50,16 +50,18 @@ cc-debug start script.py --python .venv/bin/python
 ## Session Commands
 
 ```bash
-cc-debug start <file>                    # Start debugging
+cc-debug start <file>                    # Start debugging (stops on entry)
 cc-debug start <file> --uv               # Auto-detect venv
 cc-debug start <file> --python PATH      # Use specific interpreter
 cc-debug start <file> --args "a b"       # Pass arguments
-cc-debug start <file> --no-stop          # Don't stop on entry
+cc-debug start <file> --no-stop          # Don't stop on entry (for servers)
 cc-debug quit                            # End session
 cc-debug status                          # Show state
 cc-debug restart [--args "..."]          # Restart session
 cc-debug pm <traceback-file>             # Post-mortem from crash
 ```
+
+**For servers/long-running programs:** Use `--no-stop` - returns immediately with `state: "running"`. Set breakpoints to stop at specific lines.
 
 ## Execution Control
 
@@ -102,6 +104,7 @@ cc-debug source                 # Show source context
 cc-debug source -n 10           # 10 lines of context
 cc-debug output                 # Show stdout/stderr
 cc-debug output --clear         # Clear after reading
+cc-debug output -f              # Stream continuously (like tail -f)
 ```
 
 ## Execution Tracing
@@ -187,6 +190,15 @@ cc-debug watch add "len(data)"
 cc-debug record start
 cc-debug continue
 # use step-back to find when data changed
+```
+
+**Debug server/long-running program:**
+```bash
+cc-debug start server.py --uv --no-stop
+cc-debug output -f              # Stream logs (in another terminal)
+cc-debug bp set server.py:100   # Set breakpoint
+# debugger stops when line 100 is hit
+cc-debug vars                   # Inspect state
 ```
 
 ## Reference
