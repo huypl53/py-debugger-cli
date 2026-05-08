@@ -196,10 +196,25 @@ cc-debug continue
 
 **Debug server/long-running program:**
 ```bash
+# 1. Start server (returns immediately)
 cc-debug start server.py --uv --no-stop
-cc-debug output -f              # Stream logs (in another terminal)
-cc-debug bp set server.py:100   # Set breakpoint
-# debugger stops when line 100 is hit
-cc-debug vars                   # Inspect state
+
+# 2. IMPORTANT: Stream logs to see server output
+cc-debug output -f &            # Run in background OR separate terminal
+
+# 3. Set breakpoints
+cc-debug bp set server.py:100
+
+# 4. Trigger the server (e.g., send request)
+# Debugger stops when breakpoint hit
+
+# 5. Inspect state
+cc-debug vars
+cc-debug stack
+
+# 6. Always quit when done
+cc-debug quit
 ```
+
+**Note:** Without `output -f`, server stdout/stderr is invisible. Always stream logs when debugging servers.
 
