@@ -107,9 +107,11 @@ cc-debug record start
 cc-debug next
 cc-debug step-back
 
-# End session
+# End session - ALWAYS call quit!
 cc-debug quit
 ```
+
+**IMPORTANT:** Always call `cc-debug quit` when done. This shuts down the daemon and debugpy processes. Forgetting leaves orphan processes.
 
 ## Command Reference
 

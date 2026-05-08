@@ -23,9 +23,11 @@ cc-debug next
 cc-debug vars
 cc-debug eval "len(items)"
 
-# End session
+# End session - ALWAYS call quit!
 cc-debug quit
 ```
+
+**IMPORTANT:** Always call `cc-debug quit` when done debugging. This cleanly shuts down the daemon and debugpy processes. Forgetting to quit leaves orphan processes running.
 
 ## Debugging Different Venvs
 
