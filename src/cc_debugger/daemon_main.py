@@ -38,18 +38,26 @@ class DebugSession:
         self.launch_args: list[str] = []
         self.stop_on_entry: bool = True
 
-    def start(self, target_file: str, args: list[str], stop_on_entry: bool = True) -> dict[str, Any]:
-        """Start debug session."""
+    def start(self, target_file: str, args: list[str], stop_on_entry: bool = True, python_path: str | None = None) -> dict[str, Any]:
+        """Start debug session.
+
+        Args:
+            target_file: Path to Python file to debug
+            args: Arguments to pass to the program
+            stop_on_entry: Whether to stop at first line
+            python_path: Python interpreter to use for target (None = use cc-debug's Python)
+        """
         self.target_file = target_file
         self.launch_args = args
         self.stop_on_entry = stop_on_entry
+        self.python_path = python_path or sys.executable
 
         # Find free port for adapter
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             adapter_port = s.getsockname()[1]
 
-        # Start adapter
+        # Start adapter using cc-debug's Python (has debugpy installed)
         self.adapter_process = subprocess.Popen(
             [sys.executable, "-m", "debugpy.adapter", "--host", "127.0.0.1", "--port", str(adapter_port)],
             stdin=subprocess.DEVNULL,
@@ -94,15 +102,18 @@ class DebugSession:
         })
         time.sleep(0.2)  # Wait for response
 
-        # Launch
-        self._send("launch", {
+        # Launch with specified Python interpreter
+        launch_config = {
             "program": target_file,
             "args": args,
             "cwd": str(Path(target_file).parent),
             "stopOnEntry": stop_on_entry,
             "console": "internalConsole",
             "justMyCode": True,
-        })
+        }
+        if self.python_path != sys.executable:
+            launch_config["pythonPath"] = self.python_path
+        self._send("launch", launch_config)
         time.sleep(0.2)
 
         # ConfigurationDone
@@ -530,6 +541,7 @@ class DaemonServer:
                     cmd["target_file"],
                     cmd.get("args", []),
                     cmd.get("stop_on_entry", True),
+                    cmd.get("python"),
                 )
                 loc = self.session.get_location()
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))

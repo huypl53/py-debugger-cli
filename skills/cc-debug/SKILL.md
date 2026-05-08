@@ -13,11 +13,22 @@ When using cc-debug commands, check availability in this order:
 2. **Global PATH**: `cc-debug` (if installed via pipx/uv tool)
 3. **Fallback**: Python's built-in `pdb` or `breakpoint()`
 
-To check which is available:
+## Debugging Different Venvs
+
+To debug a script that uses packages from a different venv:
+
 ```bash
-# Check plugin venv (replace PLUGIN_DIR with actual path)
-$PLUGIN_DIR/.venv/bin/cc-debug --version 2>/dev/null || cc-debug --version 2>/dev/null || echo "Not installed"
+# Install debugpy in the target venv first
+cd /path/to/project && uv pip install debugpy
+
+# Then debug with --python pointing to target's interpreter
+cc-debug start script.py --python /path/to/project/.venv/bin/python
 ```
+
+**Requirements:**
+- Target venv MUST have `debugpy` installed
+- Works best when cc-debug and target use same Python minor version
+- Cross-version debugging (e.g., 3.12 → 3.11) may timeout on heavy imports
 
 ## Manual Installation (if not using plugin)
 

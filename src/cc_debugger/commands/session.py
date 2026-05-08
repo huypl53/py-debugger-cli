@@ -109,11 +109,19 @@ def _stop_daemon():
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--args", default="", help="Arguments to pass to the program")
 @click.option("--no-stop", is_flag=True, help="Don't stop on entry")
-def start(file: str, args: str, no_stop: bool) -> None:
-    """Start debugging a Python file."""
+@click.option("--python", "python_path", default=None, help="Python interpreter for target (e.g., .venv/bin/python)")
+def start(file: str, args: str, no_stop: bool, python_path: str | None) -> None:
+    """Start debugging a Python file.
+
+    Use --python to specify the interpreter for the target script,
+    e.g., when the script needs packages from a specific venv.
+    """
     try:
         target_file = str(Path(file).resolve())
         session_id = str(uuid4())[:8]
+
+        # Resolve python path if provided
+        resolved_python = str(Path(python_path).resolve()) if python_path else None
 
         # Stop any existing daemon
         _stop_daemon()
@@ -127,6 +135,7 @@ def start(file: str, args: str, no_stop: bool) -> None:
             "target_file": target_file,
             "args": args.split() if args else [],
             "stop_on_entry": not no_stop,
+            "python": resolved_python,
         })
 
         if not result.get("success"):

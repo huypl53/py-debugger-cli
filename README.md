@@ -112,11 +112,17 @@ cc-debug quit
 ### Session Commands
 
 ```bash
-cc-debug start <file> [--args "..."]   # Start debugging
-cc-debug quit                           # End session
-cc-debug status                         # Show session state
-cc-debug restart [--args "..."]         # Restart with same/new args
-cc-debug pm <traceback-file>            # Post-mortem debug from crash
+cc-debug start <file> [--args "..."]              # Start debugging
+cc-debug start <file> --python .venv/bin/python   # Debug with specific interpreter
+cc-debug quit                                      # End session
+cc-debug status                                    # Show session state
+cc-debug restart [--args "..."]                    # Restart with same/new args
+cc-debug pm <traceback-file>                       # Post-mortem debug from crash
+```
+
+**Note:** When using `--python` to debug a different venv, that venv must have `debugpy` installed:
+```bash
+cd /path/to/project && uv pip install debugpy
 ```
 
 ### Execution Control
