@@ -5,9 +5,21 @@ description: Debug Python programs with cc-debug CLI. Use when debugging runtime
 
 # CC-Debug: Python Debugger for Coding Agents
 
-## Prerequisites
+## Command Resolution
 
-Install cc-debug CLI globally:
+When using cc-debug commands, check availability in this order:
+
+1. **Plugin venv** (if installed as plugin): `$PLUGIN_DIR/.venv/bin/cc-debug`
+2. **Global PATH**: `cc-debug` (if installed via pipx/uv tool)
+3. **Fallback**: Python's built-in `pdb` or `breakpoint()`
+
+To check which is available:
+```bash
+# Check plugin venv (replace PLUGIN_DIR with actual path)
+$PLUGIN_DIR/.venv/bin/cc-debug --version 2>/dev/null || cc-debug --version 2>/dev/null || echo "Not installed"
+```
+
+## Manual Installation (if not using plugin)
 
 ```bash
 # Recommended: pipx (isolated, auto-adds to PATH)
@@ -15,12 +27,7 @@ pipx install git+https://github.com/huypl53/py-debugger-cli.git
 
 # Alternative: uv tool
 uv tool install git+https://github.com/huypl53/py-debugger-cli.git
-
-# Verify installation
-cc-debug --version
 ```
-
-If `cc-debug` is not available, fall back to Python's built-in `pdb` or `breakpoint()`.
 
 Debug Python programs interactively using the `cc-debug` CLI. All output is JSON for easy parsing.
 

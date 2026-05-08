@@ -7,11 +7,27 @@ Python debugger CLI designed for coding agents (Claude Code, Cursor, etc.).
 Install as a Claude Code plugin to get the `/cc-debug` skill:
 
 ```bash
-# Install from GitHub
-/plugin install huypl53/py-debugger-cli
+# Step 1: Add the marketplace
+/plugin marketplace add huypl53/py-debugger-cli
 
-# Or install locally
-cc --plugin-dir /path/to/py-debugger-cli
+# Step 2: Install the plugin
+/plugin install py-debugger@py-debugger-cli
+```
+
+Or install from a local clone:
+
+```bash
+# Add local directory as marketplace
+/plugin marketplace add ./path/to/py-debugger-cli
+
+# Then install
+/plugin install py-debugger@py-debugger-cli
+```
+
+After installing, reload without restarting:
+
+```bash
+/reload-plugins
 ```
 
 Then use `/cc-debug` to debug Python programs with guided workflows.
@@ -228,19 +244,24 @@ All commands return JSON for easy parsing:
 
 ## Claude Code Integration
 
-### Using the Skill
+### As a Plugin (Recommended)
 
-Copy the skill to your Claude Code skills directory:
+Install via the marketplace (see [Claude Code Plugin](#claude-code-plugin) above).
+The plugin registers the `/cc-debug` skill which auto-activates when debugging Python.
+
+### Manual Skill Setup
+
+If not using the plugin, copy the skill directly:
 
 ```bash
 cp -r .claude/skills/cc-debug ~/.claude/skills/
 ```
 
-Then invoke with `/cc-debug` or let Claude auto-activate when debugging Python.
+Then invoke with `/cc-debug`.
 
-### Manual Usage
+### Direct CLI Usage
 
-Use with the Bash tool:
+Use `cc-debug` directly with the Bash tool:
 
 ```
 Run: cc-debug start tests/test_app.py
@@ -248,7 +269,7 @@ Run: cc-debug bp test_app.py:25
 Run: cc-debug continue
 ```
 
-The JSON output provides structured data for analysis and decision-making.
+All commands return JSON for agent parsing and decision-making.
 
 ## Architecture
 
