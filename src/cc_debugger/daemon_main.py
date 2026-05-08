@@ -1095,6 +1095,8 @@ class DaemonServer:
 def main() -> None:
     """Main entry point for daemon."""
     import os
+    import signal
+
     if os.environ.get("CC_DEBUG_LOG"):
         logging.basicConfig(
             level=logging.DEBUG,
@@ -1108,6 +1110,18 @@ def main() -> None:
 
     port = int(sys.argv[1])
     daemon = DaemonServer(port)
+
+    def handle_sigterm(signum, frame):
+        """Handle SIGTERM for graceful shutdown."""
+        logger.debug("Received SIGTERM, shutting down gracefully")
+        daemon._running = False
+        if daemon.session:
+            daemon.session.terminate()
+            daemon.session = None
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGINT, handle_sigterm)
+
     daemon.run()
 
 

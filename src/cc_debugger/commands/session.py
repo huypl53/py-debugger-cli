@@ -93,11 +93,33 @@ def _start_daemon() -> int:
 
 
 def _stop_daemon():
-    """Stop the daemon process."""
+    """Stop the daemon process gracefully."""
+    # Try graceful shutdown via quit command first
+    if DAEMON_PORT_FILE.exists():
+        try:
+            _send_to_daemon({"action": "quit"}, timeout=5)
+        except Exception:
+            pass  # Ignore errors, will kill process below
+
+    # Then kill the process
     if DAEMON_PID_FILE.exists():
         try:
             pid = int(DAEMON_PID_FILE.read_text().strip())
             os.kill(pid, 15)  # SIGTERM
+            # Wait briefly for graceful shutdown
+            import time
+            for _ in range(10):
+                try:
+                    os.kill(pid, 0)  # Check if still alive
+                    time.sleep(0.1)
+                except ProcessLookupError:
+                    break  # Process terminated
+            else:
+                # Force kill if still alive
+                try:
+                    os.kill(pid, 9)  # SIGKILL
+                except ProcessLookupError:
+                    pass
         except (ProcessLookupError, ValueError) as e:
             logger.debug("Stop daemon failed (process already dead): %s", e)
         DAEMON_PID_FILE.unlink(missing_ok=True)
