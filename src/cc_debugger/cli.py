@@ -4,7 +4,7 @@ import click
 
 from cc_debugger.commands.breakpoints import bp
 from cc_debugger.commands.control import continue_cmd, next_cmd, pause, run_to_cursor, step, stepout, until
-from cc_debugger.commands.inspect import down, eval_cmd, list_cmd, output, set_cmd, source, stack, up, vars_cmd
+from cc_debugger.commands.inspect import down, eval_cmd, inspect, list_cmd, output, set_cmd, snapshot, source, stack, summary, up, vars_cmd
 from cc_debugger.commands.record import record
 from cc_debugger.commands.session import pm, quit_cmd, restart, start, status
 from cc_debugger.commands.trace import trace
@@ -53,6 +53,9 @@ main.add_command(up)
 main.add_command(down)
 main.add_command(set_cmd, name="set")
 main.add_command(output)
+main.add_command(inspect)
+main.add_command(snapshot)
+main.add_command(summary)
 
 # Watch expressions
 main.add_command(watch)

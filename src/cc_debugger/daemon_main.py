@@ -1082,6 +1082,96 @@ class DaemonServer:
                     "thread_id": self.session.thread_id,
                 }
 
+            elif action == "inspect":
+                # Batch command: location + vars + stack in one call
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                compact = cmd.get("compact", False)
+                loc = self.session.get_location()
+                # Get variables
+                frame_id = self._get_frame_id()
+                variables = {}
+                if frame_id:
+                    scopes = self.session.send_and_wait("scopes", {"frameId": frame_id})
+                    for scope in scopes.get("body", {}).get("scopes", []):
+                        if scope["name"] in ("Locals", "Arguments"):
+                            vars_resp = self.session.send_and_wait("variables", {
+                                "variablesReference": scope["variablesReference"]
+                            })
+                            for v in vars_resp.get("body", {}).get("variables", []):
+                                variables[v["name"]] = {"type": v.get("type"), "value": v["value"]}
+                # Get stack (top 5 frames)
+                stack_resp = self.session.send_and_wait("stackTrace", {
+                    "threadId": self.session.thread_id,
+                    "levels": 5,
+                })
+                frames = []
+                for f in stack_resp.get("body", {}).get("stackFrames", []):
+                    frames.append({
+                        "name": f.get("name"),
+                        "file": f.get("source", {}).get("path"),
+                        "line": f.get("line"),
+                    })
+                if compact:
+                    return {
+                        "success": True,
+                        "data": {
+                            "location": f"{loc.get('file', '?')}:{loc.get('line', '?')} ({loc.get('function', '?')})",
+                            "var_names": list(variables.keys()),
+                            "stack_depth": len(frames),
+                        },
+                    }
+                return {
+                    "success": True,
+                    "data": {
+                        "location": loc,
+                        "variables": variables,
+                        "stack": frames,
+                        "source_context": self._get_source_context(loc.get("file", ""), loc.get("line", 0)),
+                    },
+                }
+
+            elif action == "snapshot":
+                # Full state dump for context recovery
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                loc = self.session.get_location()
+                # Gather all state
+                data = {
+                    "target_file": self.session.target_file,
+                    "location": loc,
+                    "source_context": self._get_source_context(loc.get("file", ""), loc.get("line", 0)),
+                    "breakpoints": {file: bps for file, bps in self.breakpoints.items()},
+                    "watches": list(self.watches.keys()),
+                    "watch_values": self._eval_watches() if self.watches else {},
+                    "recording": self.recording,
+                    "checkpoint_count": len(self.checkpoints),
+                    "trace_active": self.trace_active,
+                    "output_buffer_size": len(self.output_buffer),
+                }
+                return {"success": True, "data": data}
+
+            elif action == "summary":
+                # One-line state summary
+                if not self.session:
+                    return {"success": True, "data": {"summary": "no session"}}
+                loc = self.session.get_location()
+                file_name = loc.get("file", "?").split("/")[-1] if loc.get("file") else "?"
+                func = loc.get("function", "?")
+                line = loc.get("line", "?")
+                watch_count = len(self.watches)
+                bp_count = sum(len(bps) for bps in self.breakpoints.values())
+                parts = [f"{file_name}:{line} ({func})"]
+                if bp_count:
+                    parts.append(f"{bp_count} bp")
+                if watch_count:
+                    parts.append(f"{watch_count} watch")
+                if self.recording:
+                    parts.append(f"{len(self.checkpoints)} checkpoints")
+                if self.trace_active:
+                    parts.append("tracing")
+                return {"success": True, "data": {"summary": " | ".join(parts)}}
+
             elif action == "quit":
                 if self.session:
                     self.session.terminate()

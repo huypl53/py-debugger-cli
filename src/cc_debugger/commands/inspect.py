@@ -160,7 +160,8 @@ def stack(depth: int) -> None:
 @click.command("vars")
 @click.option("--all", "show_all", is_flag=True, help="Show all scopes")
 @click.option("--depth", default=0, help="Recursive expansion depth (0=no expansion)")
-def vars_cmd(show_all: bool, depth: int) -> None:
+@click.option("--names-only", is_flag=True, help="List variable names only (reduces tokens)")
+def vars_cmd(show_all: bool, depth: int, names_only: bool) -> None:
     """Show variables in current scope."""
     try:
         result = _send_to_daemon({"action": "vars", "depth": depth})
@@ -168,11 +169,19 @@ def vars_cmd(show_all: bool, depth: int) -> None:
         if not result.get("success"):
             raise RuntimeError(result.get("error"))
 
-        data = {"Locals": result.get("variables", {})}
-        if result.get("frame_index", 0) > 0:
-            data["frame_index"] = result["frame_index"]
+        variables = result.get("variables", {})
 
-        output_json(format_success("vars", data))
+        if names_only:
+            # Just list names for reduced token usage
+            output_json(format_success("vars", {
+                "names": list(variables.keys()),
+                "count": len(variables),
+            }))
+        else:
+            data = {"Locals": variables}
+            if result.get("frame_index", 0) > 0:
+                data["frame_index"] = result["frame_index"]
+            output_json(format_success("vars", data))
 
     except Exception as e:
         output_json(format_error("vars", "VARS_FAILED", str(e)))
@@ -248,4 +257,55 @@ def eval_cmd(expression: str) -> None:
 
     except Exception as e:
         output_json(format_error("eval", "EVAL_FAILED", str(e)))
+        raise SystemExit(1) from None
+
+
+@click.command()
+@click.option("--compact", "-c", is_flag=True, help="Minimal output")
+def inspect(compact: bool) -> None:
+    """Batch command: get location + vars + stack in one call (reduces round-trips)."""
+    try:
+        result = _send_to_daemon({"action": "inspect", "compact": compact})
+
+        if not result.get("success"):
+            raise RuntimeError(result.get("error"))
+
+        output_json(format_success("inspect", result.get("data", {})))
+
+    except Exception as e:
+        output_json(format_error("inspect", "INSPECT_FAILED", str(e)))
+        raise SystemExit(1) from None
+
+
+@click.command()
+def snapshot() -> None:
+    """Full state dump for context recovery (file, line, breakpoints, watches, output)."""
+    try:
+        result = _send_to_daemon({"action": "snapshot"})
+
+        if not result.get("success"):
+            raise RuntimeError(result.get("error"))
+
+        output_json(format_success("snapshot", result.get("data", {})))
+
+    except Exception as e:
+        output_json(format_error("snapshot", "SNAPSHOT_FAILED", str(e)))
+        raise SystemExit(1) from None
+
+
+@click.command()
+def summary() -> None:
+    """One-line state summary (minimal tokens)."""
+    try:
+        result = _send_to_daemon({"action": "summary"})
+
+        if not result.get("success"):
+            raise RuntimeError(result.get("error"))
+
+        # Print human-readable summary
+        data = result.get("data", {})
+        print(data.get("summary", "No session"))
+
+    except Exception as e:
+        output_json(format_error("summary", "SUMMARY_FAILED", str(e)))
         raise SystemExit(1) from None

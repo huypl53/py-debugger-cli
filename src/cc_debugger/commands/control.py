@@ -6,8 +6,40 @@ from cc_debugger.commands.session import _send_to_daemon
 from cc_debugger.output import format_error, format_success, output_json, print_program_output
 
 
+def _format_step_result(result: dict, compact: bool = False) -> dict:
+    """Format step/continue result, optionally in compact mode."""
+    # Print program output to stderr for user visibility
+    if result.get("output"):
+        print_program_output(result["output"])
+
+    if compact:
+        # Compact mode: minimal output for reduced tokens
+        loc = result.get("location", {})
+        return {
+            "location": f"{loc.get('file', '?')}:{loc.get('line', '?')}",
+            "function": loc.get("function", "?"),
+            "reason": result.get("reason"),
+        }
+
+    # Full mode: include all details
+    data = {
+        "event": "stopped",
+        "reason": result.get("reason"),
+        "location": result.get("location"),
+        "source_context": result.get("source_context", []),
+    }
+    if result.get("changedVars"):
+        data["changedVars"] = result["changedVars"]
+    if result.get("watches"):
+        data["watches"] = result["watches"]
+    if result.get("output"):
+        data["output"] = result["output"]
+    return data
+
+
 @click.command("continue")
-def continue_cmd() -> None:
+@click.option("--compact", "-c", is_flag=True, help="Minimal output (reduces tokens)")
+def continue_cmd(compact: bool) -> None:
     """Continue execution until next breakpoint."""
     try:
         result = _send_to_daemon({"action": "continue"}, timeout=None)
@@ -15,23 +47,7 @@ def continue_cmd() -> None:
         if not result.get("success"):
             raise RuntimeError(result.get("error"))
 
-        # Print program output to stderr for user visibility
-        if result.get("output"):
-            print_program_output(result["output"])
-
-        data = {
-            "event": "stopped",
-            "reason": result.get("reason"),
-            "location": result.get("location"),
-            "source_context": result.get("source_context", []),
-        }
-        if result.get("changedVars"):
-            data["changedVars"] = result["changedVars"]
-        if result.get("watches"):
-            data["watches"] = result["watches"]
-        if result.get("output"):
-            data["output"] = result["output"]
-
+        data = _format_step_result(result, compact)
         output_json(format_success("continue", data))
 
     except Exception as e:
@@ -40,7 +56,8 @@ def continue_cmd() -> None:
 
 
 @click.command("next")
-def next_cmd() -> None:
+@click.option("--compact", "-c", is_flag=True, help="Minimal output (reduces tokens)")
+def next_cmd(compact: bool) -> None:
     """Step over to next line."""
     try:
         result = _send_to_daemon({"action": "next"})
@@ -48,23 +65,7 @@ def next_cmd() -> None:
         if not result.get("success"):
             raise RuntimeError(result.get("error"))
 
-        # Print program output to stderr for user visibility
-        if result.get("output"):
-            print_program_output(result["output"])
-
-        data = {
-            "event": "stopped",
-            "reason": result.get("reason"),
-            "location": result.get("location"),
-            "source_context": result.get("source_context", []),
-        }
-        if result.get("changedVars"):
-            data["changedVars"] = result["changedVars"]
-        if result.get("watches"):
-            data["watches"] = result["watches"]
-        if result.get("output"):
-            data["output"] = result["output"]
-
+        data = _format_step_result(result, compact)
         output_json(format_success("next", data))
 
     except Exception as e:
@@ -73,7 +74,8 @@ def next_cmd() -> None:
 
 
 @click.command()
-def step() -> None:
+@click.option("--compact", "-c", is_flag=True, help="Minimal output (reduces tokens)")
+def step(compact: bool) -> None:
     """Step into function call."""
     try:
         result = _send_to_daemon({"action": "step"})
@@ -81,23 +83,7 @@ def step() -> None:
         if not result.get("success"):
             raise RuntimeError(result.get("error"))
 
-        # Print program output to stderr for user visibility
-        if result.get("output"):
-            print_program_output(result["output"])
-
-        data = {
-            "event": "stopped",
-            "reason": result.get("reason"),
-            "location": result.get("location"),
-            "source_context": result.get("source_context", []),
-        }
-        if result.get("changedVars"):
-            data["changedVars"] = result["changedVars"]
-        if result.get("watches"):
-            data["watches"] = result["watches"]
-        if result.get("output"):
-            data["output"] = result["output"]
-
+        data = _format_step_result(result, compact)
         output_json(format_success("step", data))
 
     except Exception as e:
@@ -106,7 +92,8 @@ def step() -> None:
 
 
 @click.command()
-def stepout() -> None:
+@click.option("--compact", "-c", is_flag=True, help="Minimal output (reduces tokens)")
+def stepout(compact: bool) -> None:
     """Step out of current function."""
     try:
         result = _send_to_daemon({"action": "stepout"})
@@ -114,23 +101,7 @@ def stepout() -> None:
         if not result.get("success"):
             raise RuntimeError(result.get("error"))
 
-        # Print program output to stderr for user visibility
-        if result.get("output"):
-            print_program_output(result["output"])
-
-        data = {
-            "event": "stopped",
-            "reason": result.get("reason"),
-            "location": result.get("location"),
-            "source_context": result.get("source_context", []),
-        }
-        if result.get("changedVars"):
-            data["changedVars"] = result["changedVars"]
-        if result.get("watches"):
-            data["watches"] = result["watches"]
-        if result.get("output"):
-            data["output"] = result["output"]
-
+        data = _format_step_result(result, compact)
         output_json(format_success("stepout", data))
 
     except Exception as e:
