@@ -15,7 +15,19 @@ When using cc-debug commands, check availability in this order:
 
 ## Debugging Different Venvs
 
-To debug a script that uses packages from a different venv:
+**Recommended: Use `--uv` flag** for automatic venv detection and debugpy installation:
+
+```bash
+# Auto-detect project venv, install debugpy, and debug
+cc-debug start script.py --uv
+```
+
+The `--uv` flag:
+1. Finds the project's `.venv` by walking up from the target file
+2. Auto-installs `debugpy` if not present (using `uv pip`)
+3. Uses that venv's Python for debugging
+
+**Manual approach** (if `--uv` doesn't work):
 
 ```bash
 # Install debugpy in the target venv first
@@ -24,11 +36,6 @@ cd /path/to/project && uv pip install debugpy
 # Then debug with --python pointing to target's interpreter
 cc-debug start script.py --python /path/to/project/.venv/bin/python
 ```
-
-**Requirements:**
-- Target venv MUST have `debugpy` installed
-- Works best when cc-debug and target use same Python minor version
-- Cross-version debugging (e.g., 3.12 → 3.11) may timeout on heavy imports
 
 ## Manual Installation (if not using plugin)
 
