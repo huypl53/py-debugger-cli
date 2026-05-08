@@ -42,7 +42,7 @@ Then use `/cc-debug` to debug Python programs with guided workflows.
 - **Execution tracing**: Record step-by-step execution path
 - **Time-travel**: Record execution and navigate through checkpoints
 - **Post-mortem**: Debug from crash tracebacks without re-running
-- **Program I/O**: Capture stdout/stderr from debugged program
+- **Program I/O**: Real-time stdout/stderr streaming (visible to users and agents)
 - **Venv integration**: Auto-detect project venv with `--uv`, or specify with `--python`
 
 ## Installation
@@ -207,17 +207,19 @@ cc-debug record export <file>  # Export trace
 
 ## Output Format
 
-All commands return JSON for easy parsing:
+All commands return JSON for easy parsing. **Program output (print/logging) is shown in real-time:**
+- **To stderr**: Visible to users watching the terminal
+- **In JSON**: Included in `output` array for agent parsing
 
 ### Success Response
 
 ```json
 {
   "success": true,
-  "command": "continue",
+  "command": "next",
   "result": {
     "event": "stopped",
-    "reason": "breakpoint",
+    "reason": "step",
     "location": {
       "file": "/path/to/app.py",
       "line": 42,
@@ -232,7 +234,10 @@ All commands return JSON for easy parsing:
     "changedVars": ["x", "result"],
     "watches": {
       "len(data)": {"value": "100", "changed": true}
-    }
+    },
+    "output": [
+      {"category": "stdout", "output": "Processing item 42\n"}
+    ]
   }
 }
 ```

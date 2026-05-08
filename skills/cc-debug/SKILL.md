@@ -135,7 +135,9 @@ cc-debug record export out.json # Export trace
 
 ## JSON Output
 
-All commands return JSON:
+All commands return JSON. Program output (print/logging) streams in real-time:
+- **stderr**: Users see output in terminal
+- **JSON output field**: Agents parse output array
 
 ```json
 {
@@ -149,7 +151,8 @@ All commands return JSON:
       {"number": 41, "content": "    x = 1", "current": false},
       {"number": 42, "content": "    y = 2", "current": true}
     ],
-    "changedVars": ["x"]
+    "changedVars": ["x"],
+    "output": [{"category": "stdout", "output": "Debug: x=1\n"}]
   }
 }
 ```
