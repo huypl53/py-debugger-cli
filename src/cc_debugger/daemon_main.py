@@ -34,10 +34,15 @@ class DebugSession:
         self.thread_id: int | None = None
         self.target_file: str | None = None
         self._events_lock = threading.Lock()  # Protects event queue operations
+        # Store launch args for restart
+        self.launch_args: list[str] = []
+        self.stop_on_entry: bool = True
 
     def start(self, target_file: str, args: list[str], stop_on_entry: bool = True) -> dict[str, Any]:
         """Start debug session."""
         self.target_file = target_file
+        self.launch_args = args
+        self.stop_on_entry = stop_on_entry
 
         # Find free port for adapter
         with socket.socket() as s:
@@ -243,6 +248,19 @@ class DaemonServer:
         self._running = False
         self.prev_vars: dict[str, tuple[str, str]] = {}  # name -> (type, value)
         self.watches: dict[str, str | None] = {}  # expression -> last value
+        # Frame navigation state
+        self.current_frame_idx: int = 0
+        # Breakpoint state (for temp breakpoint management)
+        self.breakpoints: dict[str, list[dict]] = {}  # file -> list of breakpoints
+        self.temp_breakpoints: dict[str, list[int]] = {}  # file -> list of temp lines
+        # Program output capture
+        self.output_buffer: list[dict] = []
+        self.max_output_lines: int = 1000
+        # Trace mode (records stepping events)
+        self.trace_active: bool = False
+        self.trace_log: list[dict] = []
+        self.trace_max: int = 1000
+        self.trace_filter: str = ""
         # Recording state
         self.recording = False
         self.checkpoints: list[dict] = []
@@ -251,6 +269,149 @@ class DaemonServer:
         self.steps_since_checkpoint = 0
         self.checkpoint_size_bytes = 0
         self.max_checkpoint_bytes = 50 * 1024 * 1024  # 50MB limit
+
+    def _get_source_context(self, file: str, line: int, context: int = 5) -> list[dict]:
+        """Get source lines around current location."""
+        try:
+            path = Path(file)
+            if not path.exists():
+                return []
+            lines = path.read_text().splitlines()
+            start = max(0, line - context - 1)
+            end = min(len(lines), line + context)
+            result = []
+            for i in range(start, end):
+                result.append({
+                    "number": i + 1,
+                    "content": lines[i],
+                    "current": i + 1 == line,
+                })
+            return result
+        except Exception:
+            return []
+
+    def _get_stack_frames(self, levels: int = 20) -> list[dict]:
+        """Get stack frames from debugpy."""
+        if not self.session:
+            return []
+        resp = self.session.send_and_wait("stackTrace", {
+            "threadId": self.session.thread_id,
+            "levels": levels,
+        })
+        return resp.get("body", {}).get("stackFrames", [])
+
+    def _get_frame_id(self) -> int:
+        """Get frame ID for current frame index."""
+        frames = self._get_stack_frames()
+        if not frames:
+            return 0
+        idx = min(self.current_frame_idx, len(frames) - 1)
+        return frames[idx].get("id", 0)
+
+    def _reset_frame_idx(self) -> None:
+        """Reset frame index to 0 (called after stepping)."""
+        self.current_frame_idx = 0
+
+    def _capture_output(self, event: dict) -> None:
+        """Capture output event to buffer."""
+        if event.get("event") == "output":
+            body = event.get("body", {})
+            category = body.get("category", "stdout")
+            output = body.get("output", "")
+            if category in ("stdout", "stderr") and output:
+                self.output_buffer.append({
+                    "category": category,
+                    "output": output,
+                })
+                while len(self.output_buffer) > self.max_output_lines:
+                    self.output_buffer.pop(0)
+
+    def _drain_output_events(self) -> None:
+        """Drain pending output events from session's event queue."""
+        if not self.session:
+            return
+        with self.session._events_lock:
+            pending = []
+            while True:
+                try:
+                    ev = self.session.events.get_nowait()
+                    if ev.get("event") == "output":
+                        self._capture_output(ev)
+                    else:
+                        pending.append(ev)
+                except Exception:
+                    break
+            for ev in pending:
+                self.session.events.put(ev)
+
+    def _record_trace(self, loc: dict) -> None:
+        """Record a trace entry if tracing is active."""
+        if not self.trace_active:
+            return
+        file = loc.get("file", "")
+        if self.trace_filter and self.trace_filter not in file:
+            return
+        if len(self.trace_log) >= self.trace_max:
+            return
+        self.trace_log.append({
+            "file": file,
+            "line": loc.get("line", 0),
+            "function": loc.get("function", ""),
+        })
+
+    def _expand_variables(self, vars_ref: int, depth: int, visited: set | None = None) -> dict:
+        """Recursively expand variables up to depth."""
+        if visited is None:
+            visited = set()
+        if vars_ref in visited:
+            return {"__circular__": True}
+        visited.add(vars_ref)
+
+        result = {}
+        if not self.session or depth < 0:
+            return result
+
+        try:
+            vars_resp = self.session.send_and_wait("variables", {"variablesReference": vars_ref})
+            for v in vars_resp.get("body", {}).get("variables", []):
+                var_info: dict = {"type": v.get("type"), "value": v["value"]}
+                child_ref = v.get("variablesReference", 0)
+                if depth > 0 and child_ref > 0:
+                    var_info["children"] = self._expand_variables(child_ref, depth - 1, visited)
+                result[v["name"]] = var_info
+        except Exception:
+            pass
+
+        return result
+
+    def _add_temp_breakpoint(self, file: str, line: int) -> None:
+        """Add a temporary breakpoint."""
+        if file not in self.temp_breakpoints:
+            self.temp_breakpoints[file] = []
+        if line not in self.temp_breakpoints[file]:
+            self.temp_breakpoints[file].append(line)
+        self._sync_breakpoints(file)
+
+    def _remove_temp_breakpoint(self, file: str, line: int) -> None:
+        """Remove a temporary breakpoint."""
+        if file in self.temp_breakpoints and line in self.temp_breakpoints[file]:
+            self.temp_breakpoints[file].remove(line)
+        self._sync_breakpoints(file)
+
+    def _sync_breakpoints(self, file: str) -> None:
+        """Sync permanent + temp breakpoints to debugpy."""
+        if not self.session:
+            return
+        permanent = self.breakpoints.get(file, [])
+        temp_lines = self.temp_breakpoints.get(file, [])
+        all_bps = list(permanent)
+        for line in temp_lines:
+            if not any(bp.get("line") == line for bp in all_bps):
+                all_bps.append({"line": line})
+        self.session.send_and_wait("setBreakpoints", {
+            "source": {"path": file},
+            "breakpoints": all_bps,
+        })
 
     def _get_current_vars(self) -> dict[str, tuple[str, str]]:
         """Get current local variables as dict."""
@@ -362,17 +523,22 @@ class DaemonServer:
                 if self.session:
                     return {"success": False, "error": "Session already active"}
                 self.session = DebugSession()
+                self._reset_frame_idx()
+                self.breakpoints.clear()
+                self.temp_breakpoints.clear()
                 ev = self.session.start(
                     cmd["target_file"],
                     cmd.get("args", []),
                     cmd.get("stop_on_entry", True),
                 )
                 loc = self.session.get_location()
+                source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))
                 return {
                     "success": True,
                     "stopped": {
                         "reason": ev["body"].get("reason"),
                         "location": loc,
+                        "source_context": source_ctx,
                     },
                     "thread_id": self.session.thread_id,
                 }
@@ -386,13 +552,17 @@ class DaemonServer:
             elif action == "continue":
                 if not self.session:
                     return {"success": False, "error": "No session"}
+                self._reset_frame_idx()
                 self.session._send("continue", {"threadId": self.session.thread_id})
                 ev = self.session._wait_event("stopped", timeout=None)
+                self._drain_output_events()
                 loc = self.session.get_location()
+                self._record_trace(loc)
                 changed = self._detect_changes()
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
-                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches}
+                source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx}
                 if auto_cp:
                     result["checkpoint"] = auto_cp
                 return result
@@ -400,12 +570,15 @@ class DaemonServer:
             elif action == "next":
                 if not self.session:
                     return {"success": False, "error": "No session"}
+                self._reset_frame_idx()
                 ev = self.session.step_and_wait("next")
                 loc = self.session.get_location()
+                self._record_trace(loc)
                 changed = self._detect_changes()
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
-                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches}
+                source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx}
                 if auto_cp:
                     result["checkpoint"] = auto_cp
                 return result
@@ -413,12 +586,15 @@ class DaemonServer:
             elif action == "step":
                 if not self.session:
                     return {"success": False, "error": "No session"}
+                self._reset_frame_idx()
                 ev = self.session.step_and_wait("stepIn")
                 loc = self.session.get_location()
+                self._record_trace(loc)
                 changed = self._detect_changes()
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
-                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches}
+                source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx}
                 if auto_cp:
                     result["checkpoint"] = auto_cp
                 return result
@@ -426,12 +602,15 @@ class DaemonServer:
             elif action == "stepout":
                 if not self.session:
                     return {"success": False, "error": "No session"}
+                self._reset_frame_idx()
                 ev = self.session.step_and_wait("stepOut")
                 loc = self.session.get_location()
+                self._record_trace(loc)
                 changed = self._detect_changes()
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
-                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches}
+                source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx}
                 if auto_cp:
                     result["checkpoint"] = auto_cp
                 return result
@@ -443,18 +622,156 @@ class DaemonServer:
                     "threadId": self.session.thread_id,
                     "levels": cmd.get("levels", 20),
                 })
-                return {"success": True, "frames": resp.get("body", {}).get("stackFrames", [])}
+                return {"success": True, "frames": resp.get("body", {}).get("stackFrames", []), "current_frame_idx": self.current_frame_idx}
+
+            elif action == "source":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                file = cmd.get("file")
+                line = cmd.get("line")
+                context = cmd.get("context", 5)
+                if not file or not line:
+                    loc = self.session.get_location()
+                    file = file or loc.get("file", "")
+                    line = line or loc.get("line", 1)
+                source_ctx = self._get_source_context(file, line, context)
+                if not source_ctx:
+                    return {"success": False, "error": "FILE_NOT_FOUND", "message": f"Cannot read file: {file}"}
+                return {"success": True, "file": file, "current_line": line, "lines": source_ctx}
+
+            elif action == "frame_up":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                frames = self._get_stack_frames()
+                if self.current_frame_idx >= len(frames) - 1:
+                    return {"success": False, "error": "AT_TOP_FRAME", "message": "Already at outermost frame"}
+                self.current_frame_idx += 1
+                frame = frames[self.current_frame_idx]
+                file = frame.get("source", {}).get("path", "")
+                line = frame.get("line", 1)
+                source_ctx = self._get_source_context(file, line)
+                return {
+                    "success": True,
+                    "frame_index": self.current_frame_idx,
+                    "frame": {"id": frame.get("id"), "name": frame.get("name"), "file": file, "line": line},
+                    "source_context": source_ctx,
+                }
+
+            elif action == "frame_down":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                if self.current_frame_idx <= 0:
+                    return {"success": False, "error": "AT_BOTTOM_FRAME", "message": "Already at innermost frame"}
+                self.current_frame_idx -= 1
+                frames = self._get_stack_frames()
+                frame = frames[self.current_frame_idx]
+                file = frame.get("source", {}).get("path", "")
+                line = frame.get("line", 1)
+                source_ctx = self._get_source_context(file, line)
+                return {
+                    "success": True,
+                    "frame_index": self.current_frame_idx,
+                    "frame": {"id": frame.get("id"), "name": frame.get("name"), "file": file, "line": line},
+                    "source_context": source_ctx,
+                }
+
+            elif action == "run_to_cursor":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                file = cmd.get("file")
+                line = cmd.get("line")
+                if not file or not line:
+                    return {"success": False, "error": "INVALID_ARGS", "message": "file and line required"}
+                if not Path(file).exists():
+                    return {"success": False, "error": "FILE_NOT_FOUND", "message": f"File not found: {file}"}
+                self._reset_frame_idx()
+                self._add_temp_breakpoint(file, line)
+                try:
+                    self.session._send("continue", {"threadId": self.session.thread_id})
+                    ev = self.session._wait_event("stopped", timeout=None)
+                    loc = self.session.get_location()
+                    changed = self._detect_changes()
+                    watches = self._eval_watches() if self.watches else {}
+                    source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))
+                    return {
+                        "success": True,
+                        "reason": ev["body"].get("reason"),
+                        "location": loc,
+                        "changedVars": changed,
+                        "watches": watches,
+                        "source_context": source_ctx,
+                        "temp_bp_removed": True,
+                    }
+                finally:
+                    self._remove_temp_breakpoint(file, line)
+
+            elif action == "until":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                target_line = cmd.get("line")
+                if not target_line:
+                    return {"success": False, "error": "INVALID_ARGS", "message": "line required"}
+                loc = self.session.get_location()
+                current_file = loc.get("file", "")
+                if not current_file or not Path(current_file).exists():
+                    return {"success": False, "error": "FILE_NOT_FOUND", "message": "Cannot determine current file"}
+                self._reset_frame_idx()
+                self._add_temp_breakpoint(current_file, target_line)
+                try:
+                    self.session._send("continue", {"threadId": self.session.thread_id})
+                    ev = self.session._wait_event("stopped", timeout=None)
+                    new_loc = self.session.get_location()
+                    changed = self._detect_changes()
+                    watches = self._eval_watches() if self.watches else {}
+                    source_ctx = self._get_source_context(new_loc.get("file", ""), new_loc.get("line", 0))
+                    return {
+                        "success": True,
+                        "reason": ev["body"].get("reason"),
+                        "location": new_loc,
+                        "changedVars": changed,
+                        "watches": watches,
+                        "source_context": source_ctx,
+                    }
+                finally:
+                    self._remove_temp_breakpoint(current_file, target_line)
+
+            elif action == "setvar":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                name = cmd.get("name", "")
+                value_expr = cmd.get("value", "")
+                if not name:
+                    return {"success": False, "error": "INVALID_ARGS", "message": "variable name required"}
+                frame_id = self._get_frame_id()
+                assignment = f"{name} = {value_expr}"
+                try:
+                    self.session.send_and_wait("evaluate", {
+                        "expression": assignment,
+                        "frameId": frame_id,
+                        "context": "repl",
+                    })
+                    resp = self.session.send_and_wait("evaluate", {
+                        "expression": name,
+                        "frameId": frame_id,
+                        "context": "watch",
+                    })
+                    return {
+                        "success": True,
+                        "variable": name,
+                        "expression": assignment,
+                        "new_value": resp.get("body", {}).get("result"),
+                        "new_type": resp.get("body", {}).get("type"),
+                    }
+                except Exception as e:
+                    return {"success": False, "error": "EVAL_ERROR", "message": str(e)}
 
             elif action == "vars":
                 if not self.session:
                     return {"success": False, "error": "No session"}
-                # Get current frame
-                stack = self.session.send_and_wait("stackTrace", {"threadId": self.session.thread_id, "levels": 1})
-                frames = stack.get("body", {}).get("stackFrames", [])
-                if not frames:
-                    return {"success": True, "variables": {}}
-                frame_id = frames[0]["id"]
-                # Get scopes
+                frame_id = self._get_frame_id()
+                depth = cmd.get("depth", 0)
+                if not frame_id:
+                    return {"success": True, "variables": {}, "frame_index": self.current_frame_idx}
                 scopes = self.session.send_and_wait("scopes", {"frameId": frame_id})
                 result = {}
                 for scope in scopes.get("body", {}).get("scopes", []):
@@ -463,29 +780,31 @@ class DaemonServer:
                             "variablesReference": scope["variablesReference"]
                         })
                         for v in vars_resp.get("body", {}).get("variables", []):
-                            result[v["name"]] = {"type": v.get("type"), "value": v["value"]}
-                return {"success": True, "variables": result}
+                            var_info: dict = {"type": v.get("type"), "value": v["value"]}
+                            if depth > 0 and v.get("variablesReference", 0) > 0:
+                                var_info["children"] = self._expand_variables(v["variablesReference"], depth - 1)
+                            result[v["name"]] = var_info
+                return {"success": True, "variables": result, "frame_index": self.current_frame_idx}
 
             elif action == "eval":
                 if not self.session:
                     return {"success": False, "error": "No session"}
-                stack = self.session.send_and_wait("stackTrace", {"threadId": self.session.thread_id, "levels": 1})
-                frame_id = stack.get("body", {}).get("stackFrames", [{}])[0].get("id", 0)
+                frame_id = self._get_frame_id()
                 resp = self.session.send_and_wait("evaluate", {
                     "expression": cmd["expression"],
                     "frameId": frame_id,
                     "context": "repl",
                 })
-                return {"success": True, "value": resp.get("body", {}).get("result"), "type": resp.get("body", {}).get("type")}
+                return {"success": True, "value": resp.get("body", {}).get("result"), "type": resp.get("body", {}).get("type"), "frame_index": self.current_frame_idx}
 
             elif action == "bp":
                 if not self.session:
                     return {"success": False, "error": "No session"}
-                resp = self.session.send_and_wait("setBreakpoints", {
-                    "source": {"path": cmd["file"]},
-                    "breakpoints": cmd["breakpoints"],
-                })
-                return {"success": True, "breakpoints": resp.get("body", {}).get("breakpoints", [])}
+                file = cmd["file"]
+                breakpoints = cmd["breakpoints"]
+                self.breakpoints[file] = breakpoints
+                self._sync_breakpoints(file)
+                return {"success": True, "breakpoints": breakpoints}
 
             elif action == "bp_exception":
                 if not self.session:
@@ -605,6 +924,110 @@ class DaemonServer:
                 data = {"checkpoints": self.checkpoints}
                 resolved.write_text(json.dumps(data, indent=2))
                 return {"success": True, "file": str(resolved), "checkpoint_count": len(self.checkpoints)}
+
+            elif action == "trace_start":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                if self.trace_active:
+                    return {"success": False, "error": "TRACE_ALREADY_ACTIVE", "message": "Trace already running"}
+                max_entries = cmd.get("max_entries", 1000)
+                filter_pattern = cmd.get("filter", "")
+                self.trace_active = True
+                self.trace_max = max_entries
+                self.trace_filter = filter_pattern
+                self.trace_log = []
+                return {"success": True, "trace_active": True, "max_entries": max_entries, "filter": filter_pattern}
+
+            elif action == "trace_stop":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                if not self.trace_active:
+                    return {"success": False, "error": "NO_TRACE", "message": "No trace active"}
+                self.trace_active = False
+                return {"success": True, "trace_active": False}
+
+            elif action == "trace_get":
+                limit = cmd.get("limit", 100)
+                trace = self.trace_log[-limit:] if self.trace_log else []
+                return {"success": True, "trace": trace, "count": len(trace), "trace_active": self.trace_active}
+
+            elif action == "output":
+                self._drain_output_events()
+                clear = cmd.get("clear", False)
+                lines = list(self.output_buffer)
+                if clear:
+                    self.output_buffer.clear()
+                return {"success": True, "lines": lines, "count": len(lines)}
+
+            elif action == "pm_start":
+                if self.session:
+                    return {"success": False, "error": "Session already active. Quit first."}
+                crash_file = cmd.get("crash_file")
+                crash_line = cmd.get("crash_line")
+                if not crash_file or not crash_line:
+                    return {"success": False, "error": "INVALID_ARGS", "message": "crash_file and crash_line required"}
+                if not Path(crash_file).exists():
+                    return {"success": False, "error": "FILE_NOT_FOUND", "message": f"File not found: {crash_file}"}
+                self.session = DebugSession()
+                self._reset_frame_idx()
+                self.breakpoints.clear()
+                self.temp_breakpoints.clear()
+                ev = self.session.start(crash_file, [], stop_on_entry=True)
+                self.breakpoints[crash_file] = [{"line": crash_line}]
+                self._sync_breakpoints(crash_file)
+                self.session._send("continue", {"threadId": self.session.thread_id})
+                try:
+                    stop_ev = self.session._wait_event("stopped", timeout=30)
+                    loc = self.session.get_location()
+                    source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))
+                    return {
+                        "success": True,
+                        "mode": "post_mortem",
+                        "crash_location": {"file": crash_file, "line": crash_line},
+                        "stopped": {
+                            "reason": stop_ev["body"].get("reason"),
+                            "location": loc,
+                            "source_context": source_ctx,
+                        },
+                        "thread_id": self.session.thread_id,
+                    }
+                except TimeoutError:
+                    loc = {"file": crash_file, "line": crash_line, "function": "unknown"}
+                    return {
+                        "success": True,
+                        "mode": "post_mortem",
+                        "crash_location": {"file": crash_file, "line": crash_line},
+                        "note": "Program completed or crashed before reaching breakpoint line.",
+                        "stopped": {"reason": "entry", "location": loc},
+                        "thread_id": self.session.thread_id,
+                    }
+
+            elif action == "restart":
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                target_file = self.session.target_file
+                args = cmd.get("args", self.session.launch_args)
+                stop_on_entry = self.session.stop_on_entry
+                self.session.terminate()
+                self.session = None
+                self._reset_frame_idx()
+                self.breakpoints.clear()
+                self.temp_breakpoints.clear()
+                self.prev_vars.clear()
+                self.session = DebugSession()
+                ev = self.session.start(target_file, args, stop_on_entry)
+                loc = self.session.get_location()
+                source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))
+                return {
+                    "success": True,
+                    "restarted": True,
+                    "stopped": {
+                        "reason": ev["body"].get("reason"),
+                        "location": loc,
+                        "source_context": source_ctx,
+                    },
+                    "thread_id": self.session.thread_id,
+                }
 
             elif action == "quit":
                 if self.session:

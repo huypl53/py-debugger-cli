@@ -20,7 +20,9 @@ def bp() -> None:
 @bp.command("set")
 @click.argument("location")
 @click.option("-c", "--condition", help="Breakpoint condition")
-def bp_set(location: str, condition: str | None) -> None:
+@click.option("--log", "log_message", help="Log expression without stopping (e.g., 'x={x}')")
+@click.option("--hit", "hit_count", type=int, help="Break after N hits")
+def bp_set(location: str, condition: str | None, log_message: str | None, hit_count: int | None) -> None:
     """Set a breakpoint at file:line."""
     try:
         if ":" not in location:
@@ -35,9 +37,13 @@ def bp_set(location: str, condition: str | None) -> None:
         if file not in _breakpoints:
             _breakpoints[file] = []
 
-        bp_entry = {"line": line}
+        bp_entry: dict = {"line": line}
         if condition:
             bp_entry["condition"] = condition
+        if log_message:
+            bp_entry["logMessage"] = log_message
+        if hit_count:
+            bp_entry["hitCondition"] = str(hit_count)
 
         _breakpoints[file].append(bp_entry)
 
@@ -51,14 +57,17 @@ def bp_set(location: str, condition: str | None) -> None:
             _breakpoints[file].pop()
             raise RuntimeError(result.get("error"))
 
-        verified = result.get("breakpoints", [{}])[-1]
+        bp_type = "log" if log_message else "breakpoint"
 
         output_json(format_success("bp set", {
             "id": len(_breakpoints[file]) - 1,
             "file": file,
             "line": line,
             "condition": condition,
-            "verified": verified.get("verified", True),
+            "logMessage": log_message,
+            "hitCondition": str(hit_count) if hit_count else None,
+            "type": bp_type,
+            "verified": True,
         }))
 
     except Exception as e:
@@ -74,12 +83,18 @@ def bp_list() -> None:
         idx = 0
         for file, bps in _breakpoints.items():
             for bp_entry in bps:
-                all_bps.append({
+                bp_info: dict = {
                     "id": idx,
                     "file": file,
                     "line": bp_entry["line"],
                     "condition": bp_entry.get("condition"),
-                })
+                }
+                if bp_entry.get("logMessage"):
+                    bp_info["logMessage"] = bp_entry["logMessage"]
+                    bp_info["type"] = "log"
+                if bp_entry.get("hitCondition"):
+                    bp_info["hitCondition"] = bp_entry["hitCondition"]
+                all_bps.append(bp_info)
                 idx += 1
 
         output_json(format_success("bp list", {"breakpoints": all_bps}))

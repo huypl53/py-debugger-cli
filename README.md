@@ -18,11 +18,15 @@ Then use `/cc-debug` to debug Python programs with guided workflows.
 
 ## Features
 
-- **Agent-first design**: JSON output, blocking commands, state diffs
+- **Agent-first design**: JSON output, blocking commands, source context in every stop
 - **Full debugging**: Breakpoints, stepping, variable inspection, expression evaluation
 - **State tracking**: Track variable changes between steps, watch expressions
+- **Stack navigation**: Move up/down call stack, modify variables in any frame
+- **Smart breakpoints**: Line, conditional, log, hit count, exception, watchpoint, function
+- **Execution tracing**: Record step-by-step execution path
 - **Time-travel**: Record execution and navigate through checkpoints
-- **Smart breakpoints**: Line, conditional, exception, watchpoint, function patterns
+- **Post-mortem**: Debug from crash tracebacks without re-running
+- **Program I/O**: Capture stdout/stderr from debugged program
 
 ## Installation
 
@@ -95,30 +99,36 @@ cc-debug quit
 cc-debug start <file> [--args "..."]   # Start debugging
 cc-debug quit                           # End session
 cc-debug status                         # Show session state
+cc-debug restart [--args "..."]         # Restart with same/new args
+cc-debug pm <traceback-file>            # Post-mortem debug from crash
 ```
 
 ### Execution Control
 
 ```bash
-cc-debug continue    # Run until breakpoint (blocks)
-cc-debug next        # Step over
-cc-debug step        # Step into
-cc-debug stepout     # Step out
-cc-debug pause       # Pause execution
+cc-debug continue          # Run until breakpoint (blocks)
+cc-debug next              # Step over
+cc-debug step              # Step into
+cc-debug stepout           # Step out
+cc-debug pause             # Pause execution
+cc-debug run-to-cursor <file:line>  # Run to specific line (temp bp)
+cc-debug until <line>      # Run to line in current file
 ```
 
 ### Breakpoints
 
 ```bash
-cc-debug bp set <file:line>          # Line breakpoint
-cc-debug bp set <file:line> -c "x>5" # Conditional
-cc-debug bp exception                # Break on all exceptions
-cc-debug bp exception --no-raised    # Break only on uncaught
-cc-debug bp watch "obj.attr"         # Watchpoint (polls on step)
-cc-debug bp func <name>              # Function breakpoint
-cc-debug bp list                     # List all
-cc-debug bp del <id>                 # Delete
-cc-debug bp clear                    # Clear all
+cc-debug bp set <file:line>            # Line breakpoint
+cc-debug bp set <file:line> -c "x>5"   # Conditional
+cc-debug bp set <file:line> --log "x={x}"  # Log breakpoint (prints without stopping)
+cc-debug bp set <file:line> --hit 5    # Hit count (break on 5th hit)
+cc-debug bp exception                  # Break on all exceptions
+cc-debug bp exception --no-raised      # Break only on uncaught
+cc-debug bp watch "obj.attr"           # Watchpoint (polls on step)
+cc-debug bp func <name>                # Function breakpoint
+cc-debug bp list                       # List all
+cc-debug bp del <id>                   # Delete
+cc-debug bp clear                      # Clear all
 ```
 
 ### Inspection
@@ -127,7 +137,16 @@ cc-debug bp clear                    # Clear all
 cc-debug stack              # Call stack with locals
 cc-debug vars               # Variables in current scope
 cc-debug vars --all         # All scopes
+cc-debug vars --depth 3     # Recursive expansion (nested objects)
 cc-debug eval "<expr>"      # Evaluate expression
+cc-debug set "x = 42"       # Modify variable value
+cc-debug up                 # Move up one stack frame (to caller)
+cc-debug down               # Move down one stack frame (to callee)
+cc-debug source             # Show source around current location
+cc-debug source -n 10       # Show 10 lines of context
+cc-debug source app.py:100  # Show source at specific location
+cc-debug output             # Show program stdout/stderr
+cc-debug output --clear     # Clear output buffer after reading
 ```
 
 ### Watch Expressions
@@ -137,6 +156,17 @@ cc-debug watch add "<expr>" # Add watch expression
 cc-debug watch list         # List watches
 cc-debug watch del "<expr>" # Remove watch
 cc-debug watch clear        # Clear all
+```
+
+### Execution Tracing
+
+```bash
+cc-debug trace start                # Begin recording step locations
+cc-debug trace start --max 1000     # Max entries to record
+cc-debug trace start --filter app   # Only trace files containing "app"
+cc-debug trace get                  # Get recorded trace entries
+cc-debug trace get --limit 50       # Limit returned entries
+cc-debug trace stop                 # Stop recording (log retained)
 ```
 
 ### Recording (Time-Travel)
@@ -169,6 +199,12 @@ All commands return JSON for easy parsing:
       "line": 42,
       "function": "process_data"
     },
+    "source_context": [
+      {"number": 40, "content": "    x = 1", "current": false},
+      {"number": 41, "content": "    y = 2", "current": false},
+      {"number": 42, "content": "    z = x + y", "current": true},
+      {"number": 43, "content": "    return z", "current": false}
+    ],
     "changedVars": ["x", "result"],
     "watches": {
       "len(data)": {"value": "100", "changed": true}

@@ -164,6 +164,30 @@ def quit_cmd() -> None:
 
 
 @click.command()
+@click.option("--args", default=None, help="New arguments (uses original if not specified)")
+def restart(args: str | None) -> None:
+    """Restart the debug session with the same or new arguments."""
+    try:
+        cmd: dict = {"action": "restart"}
+        if args is not None:
+            cmd["args"] = args.split() if args else []
+
+        result = _send_to_daemon(cmd)
+
+        if not result.get("success"):
+            raise RuntimeError(result.get("error", "Restart failed"))
+
+        output_json(format_success("restart", {
+            "restarted": True,
+            "stopped": result.get("stopped"),
+        }))
+
+    except Exception as e:
+        output_json(format_error("restart", "RESTART_FAILED", str(e)))
+        raise SystemExit(1) from None
+
+
+@click.command()
 def status() -> None:
     """Show current debug session status."""
     try:
@@ -185,3 +209,60 @@ def status() -> None:
             "state": "no_session",
             "message": "No active debug session",
         }))
+
+
+@click.command()
+@click.argument("traceback_file", type=click.Path())
+def pm(traceback_file: str) -> None:
+    """Start post-mortem debugging from a traceback file.
+
+    Pass '-' to read from stdin.
+    """
+    from cc_debugger.core.traceback_parser import get_crash_location, parse_traceback_file
+
+    try:
+        frames = parse_traceback_file(traceback_file)
+
+        if not frames:
+            output_json(format_error("pm", "NO_TRACEBACK", "No valid traceback found"))
+            raise SystemExit(1)
+
+        crash = frames[-1]
+        crash_file = crash["file"]
+        crash_line = crash["line"]
+
+        if not Path(crash_file).exists():
+            output_json(format_error("pm", "FILE_NOT_FOUND", f"Crash file not found: {crash_file}"))
+            raise SystemExit(1)
+
+        _stop_daemon()
+        _start_daemon()
+
+        result = _send_to_daemon({
+            "action": "pm_start",
+            "crash_file": crash_file,
+            "crash_line": crash_line,
+            "frames": frames,
+        })
+
+        if not result.get("success"):
+            raise RuntimeError(result.get("error", "PM start failed"))
+
+        output_json(format_success("pm", {
+            "crash_location": f"{crash_file}:{crash_line}",
+            "crash_function": crash.get("function"),
+            "crash_code": crash.get("code"),
+            "frame_count": len(frames),
+            "stopped": result.get("stopped"),
+            "source_context": result.get("source_context", []),
+        }))
+
+    except FileNotFoundError as e:
+        output_json(format_error("pm", "FILE_NOT_FOUND", str(e)))
+        raise SystemExit(1) from None
+    except SystemExit:
+        raise
+    except Exception as e:
+        _stop_daemon()
+        output_json(format_error("pm", "PM_FAILED", str(e)))
+        raise SystemExit(1) from None
