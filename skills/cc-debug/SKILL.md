@@ -5,181 +5,185 @@ description: Debug Python programs with cc-debug CLI. Use when debugging runtime
 
 # CC-Debug: Python Debugger for Coding Agents
 
-## Command Resolution
-
-When using cc-debug commands, check availability in this order:
-
-1. **Plugin venv** (if installed as plugin): `$PLUGIN_DIR/.venv/bin/cc-debug`
-2. **Global PATH**: `cc-debug` (if installed via pipx/uv tool)
-3. **Fallback**: Python's built-in `pdb` or `breakpoint()`
-
-## Debugging Different Venvs
-
-**Recommended: Use `--uv` flag** for automatic venv detection and debugpy installation:
-
-```bash
-# Auto-detect project venv, install debugpy, and debug
-cc-debug start script.py --uv
-```
-
-The `--uv` flag:
-1. Finds the project's `.venv` by walking up from the target file
-2. Auto-installs `debugpy` if not present (using `uv pip`)
-3. Uses that venv's Python for debugging
-
-**Manual approach** (if `--uv` doesn't work):
-
-```bash
-# Install debugpy in the target venv first
-cd /path/to/project && uv pip install debugpy
-
-# Then debug with --python pointing to target's interpreter
-cc-debug start script.py --python /path/to/project/.venv/bin/python
-```
-
-## Manual Installation (if not using plugin)
-
-```bash
-# Recommended: pipx (isolated, auto-adds to PATH)
-pipx install git+https://github.com/huypl53/py-debugger-cli.git
-
-# Alternative: uv tool
-uv tool install git+https://github.com/huypl53/py-debugger-cli.git
-```
-
-Debug Python programs interactively using the `cc-debug` CLI. All output is JSON for easy parsing.
-
-## When to Use
-
-Use this skill when:
-- Debugging Python runtime errors, exceptions, or unexpected behavior
-- Stepping through code to understand execution flow
-- Inspecting variable values at specific points
-- Setting breakpoints to pause at interesting locations
-- Tracking how variables change over time
-- Using time-travel debugging to revisit previous states
-
 ## Quick Start
 
 ```bash
-# Start debugging
+# Debug with project's venv (recommended)
+cc-debug start script.py --uv
+
+# Or debug with cc-debug's Python
 cc-debug start script.py
 
-# Set breakpoint and continue
+# Set breakpoint and run
 cc-debug bp set script.py:42
 cc-debug continue
 
-# Step through code
-cc-debug next          # step over
-cc-debug step          # step into
-cc-debug stepout       # step out of function
-
-# Inspect state
-cc-debug vars          # show local variables
-cc-debug eval "expr"   # evaluate expression
-cc-debug stack         # show call stack
+# Step and inspect
+cc-debug next
+cc-debug vars
+cc-debug eval "len(items)"
 
 # End session
 cc-debug quit
 ```
 
-## Workflow
+## Debugging Different Venvs
 
-### 1. Start Session
-```bash
-cc-debug start <file.py> [--args "arg1 arg2"] [--no-stop]
-```
-- Launches debugpy daemon, pauses at first line by default
-- Use `--no-stop` to run until first breakpoint
+**Recommended: Use `--uv` flag** for automatic venv detection:
 
-### 2. Set Breakpoints
 ```bash
-cc-debug bp set <file>:<line> [-c "condition"]
-cc-debug bp list
-cc-debug bp del <id>
-cc-debug bp func <function_name>
-cc-debug bp exception [--raised/--no-raised] [--uncaught/--no-uncaught]
+cc-debug start script.py --uv
 ```
 
-### 3. Control Execution
+The `--uv` flag:
+1. Finds `.venv` by walking up from target file
+2. Auto-installs `debugpy` if missing
+3. Uses that venv's Python for debugging
+
+**Manual approach:**
+
+```bash
+cd /path/to/project && uv pip install debugpy
+cc-debug start script.py --python .venv/bin/python
+```
+
+## Session Commands
+
+```bash
+cc-debug start <file>                    # Start debugging
+cc-debug start <file> --uv               # Auto-detect venv
+cc-debug start <file> --python PATH      # Use specific interpreter
+cc-debug start <file> --args "a b"       # Pass arguments
+cc-debug start <file> --no-stop          # Don't stop on entry
+cc-debug quit                            # End session
+cc-debug status                          # Show state
+cc-debug restart [--args "..."]          # Restart session
+cc-debug pm <traceback-file>             # Post-mortem from crash
+```
+
+## Execution Control
+
 | Command | Action |
 |---------|--------|
-| `cc-debug continue` | Run until next breakpoint |
-| `cc-debug next` | Step over (same level) |
-| `cc-debug step` | Step into function |
-| `cc-debug stepout` | Step out to caller |
+| `cc-debug continue` | Run until breakpoint |
+| `cc-debug next` | Step over |
+| `cc-debug step` | Step into |
+| `cc-debug stepout` | Step out |
+| `cc-debug run-to-cursor <file:line>` | Run to line (temp bp) |
+| `cc-debug until <line>` | Run to line in current file |
+| `cc-debug pause` | Pause execution |
 
-### 4. Inspect State
+## Breakpoints
+
 ```bash
-cc-debug vars [--all] [--depth N]    # show variables
-cc-debug eval "<expression>"          # evaluate in context
-cc-debug stack [--depth N]            # show call stack
+cc-debug bp set <file>:<line>              # Line breakpoint
+cc-debug bp set <file>:<line> -c "x>5"     # Conditional
+cc-debug bp set <file>:<line> --log "x={x}" # Log (print without stopping)
+cc-debug bp set <file>:<line> --hit 5      # Hit count (break on 5th)
+cc-debug bp exception                       # Break on exceptions
+cc-debug bp func <name>                     # Function breakpoint
+cc-debug bp watch "obj.attr"                # Watchpoint
+cc-debug bp list                            # List all
+cc-debug bp del <id>                        # Delete
+cc-debug bp clear                           # Clear all
 ```
 
-### 5. Watch Expressions
-```bash
-cc-debug watch add "x + y"    # track expression
-cc-debug watch list           # show all with values
-cc-debug watch del "x + y"    # remove watch
-```
-Watches auto-evaluate on each step, showing `changed: true` when values differ.
+## Inspection
 
-### 6. Time-Travel Debugging (Recording)
 ```bash
-cc-debug record start [--auto-interval N]  # start recording
-cc-debug record checkpoint --reason "msg"  # manual checkpoint
-cc-debug record list                       # list checkpoints
-cc-debug step-back                         # go to previous checkpoint
-cc-debug step-forward                      # go to next checkpoint
-cc-debug goto <checkpoint_id>              # jump to specific checkpoint
-cc-debug record stop                       # stop recording
-cc-debug record export output.json         # save recording
+cc-debug vars                   # Local variables
+cc-debug vars --depth 3         # Recursive expansion
+cc-debug eval "<expr>"          # Evaluate expression
+cc-debug set "x = 42"           # Modify variable
+cc-debug stack                  # Call stack
+cc-debug up                     # Move to caller frame
+cc-debug down                   # Move to callee frame
+cc-debug source                 # Show source context
+cc-debug source -n 10           # 10 lines of context
+cc-debug output                 # Show stdout/stderr
+cc-debug output --clear         # Clear after reading
 ```
 
-## JSON Output Format
+## Execution Tracing
 
-All commands return JSON with `success` field:
+```bash
+cc-debug trace start            # Start recording steps
+cc-debug trace start --max 500  # Limit entries
+cc-debug trace get              # Get trace log
+cc-debug trace stop             # Stop recording
+```
+
+## Watch Expressions
+
+```bash
+cc-debug watch add "x + y"      # Track expression
+cc-debug watch list             # Show all with values
+cc-debug watch del "x + y"      # Remove watch
+```
+
+## Time-Travel (Recording)
+
+```bash
+cc-debug record start           # Start recording
+cc-debug record checkpoint      # Manual checkpoint
+cc-debug step-back              # Go to previous
+cc-debug step-forward           # Go to next
+cc-debug goto <id>              # Jump to checkpoint
+cc-debug record stop            # Stop recording
+cc-debug record export out.json # Export trace
+```
+
+## JSON Output
+
+All commands return JSON:
+
 ```json
-{"success": true, "command": "next", "data": {"event": "stopped", "location": {...}}}
-{"success": false, "command": "eval", "error": {"code": "EVAL_FAILED", "message": "..."}}
+{
+  "success": true,
+  "command": "next",
+  "result": {
+    "event": "stopped",
+    "reason": "step",
+    "location": {"file": "/app.py", "line": 42, "function": "main"},
+    "source_context": [
+      {"number": 41, "content": "    x = 1", "current": false},
+      {"number": 42, "content": "    y = 2", "current": true}
+    ],
+    "changedVars": ["x"]
+  }
+}
 ```
-
-Step commands include `changedVars` showing what changed since last stop.
-
-## Debugging Strategy
-
-1. **Reproduce first**: Run once without debugger to get error location
-2. **Set strategic breakpoints**: Place just before error, not at every line
-3. **Use watches for suspects**: Track variables you suspect are wrong
-4. **Step sparingly**: Use `continue` to breakpoints, not step-by-step everywhere
-5. **Check assumptions**: `eval` expressions to verify your mental model
-6. **Record complex bugs**: Enable recording for time-travel on hard-to-reproduce issues
 
 ## Common Patterns
 
+**Debug with project packages:**
+```bash
+cc-debug start myproject/main.py --uv
+cc-debug continue
+```
+
 **Debug exception:**
 ```bash
-cc-debug start script.py
+cc-debug start script.py --uv
 cc-debug bp exception --raised
 cc-debug continue
-# stops when exception raised, inspect with vars/stack
+# stops at exception, inspect with vars/stack
 ```
 
-**Debug specific function:**
+**Post-mortem from crash:**
 ```bash
-cc-debug start script.py --no-stop
-cc-debug bp func process_data
-cc-debug continue
-# stops on function entry
+python script.py 2> traceback.txt
+cc-debug pm traceback.txt
+# starts at crash location
 ```
 
-**Track variable corruption:**
+**Track variable changes:**
 ```bash
-cc-debug start script.py
-cc-debug record start --auto-interval 5
+cc-debug start script.py --uv
 cc-debug watch add "len(data)"
+cc-debug record start
 cc-debug continue
-# after bug, step-back through checkpoints to find when data changed
+# use step-back to find when data changed
 ```
 
 ## Reference
