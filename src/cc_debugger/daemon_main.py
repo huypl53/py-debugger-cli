@@ -119,11 +119,24 @@ class DebugSession:
         # ConfigurationDone
         self._send("configurationDone", {})
 
-        # Wait for stopped event with longer timeout
-        ev = self._wait_event("stopped", timeout=60)
-        self.thread_id = ev["body"].get("threadId", 1)
-
-        return ev
+        if stop_on_entry:
+            # Wait for stopped event with longer timeout
+            ev = self._wait_event("stopped", timeout=60)
+            self.thread_id = ev["body"].get("threadId", 1)
+            return ev
+        else:
+            # With --no-stop, program is running - get thread ID and return
+            time.sleep(0.3)  # Give program time to start
+            try:
+                resp = self.send_and_wait("threads", {}, timeout=5)
+                threads = resp.get("body", {}).get("threads", [])
+                if threads:
+                    self.thread_id = threads[0].get("id", 1)
+                else:
+                    self.thread_id = 1
+            except Exception:
+                self.thread_id = 1
+            return {"body": {"reason": "running", "threadId": self.thread_id}}
 
     def _read_loop(self) -> None:
         """Background message reader."""
@@ -537,18 +550,28 @@ class DaemonServer:
                 self._reset_frame_idx()
                 self.breakpoints.clear()
                 self.temp_breakpoints.clear()
+                stop_on_entry = cmd.get("stop_on_entry", True)
                 ev = self.session.start(
                     cmd["target_file"],
                     cmd.get("args", []),
-                    cmd.get("stop_on_entry", True),
+                    stop_on_entry,
                     cmd.get("python"),
                 )
+                reason = ev["body"].get("reason")
+                if reason == "running":
+                    # Program is running (--no-stop), can't get location
+                    return {
+                        "success": True,
+                        "state": "running",
+                        "message": "Program running. Set breakpoints and use 'pause' or wait for breakpoint hit.",
+                        "thread_id": self.session.thread_id,
+                    }
                 loc = self.session.get_location()
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))
                 return {
                     "success": True,
                     "stopped": {
-                        "reason": ev["body"].get("reason"),
+                        "reason": reason,
                         "location": loc,
                         "source_context": source_ctx,
                     },

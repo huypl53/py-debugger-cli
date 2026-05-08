@@ -236,11 +236,17 @@ def start(file: str, args: str, no_stop: bool, python_path: str | None, use_uv: 
         if not result.get("success"):
             raise RuntimeError(result.get("error", "Failed to start"))
 
-        output_json(format_success("start", {
+        response_data: dict = {
             "sessionId": session_id,
             "file": target_file,
-            "stopped": result.get("stopped"),
-        }))
+        }
+        if result.get("state") == "running":
+            response_data["state"] = "running"
+            response_data["message"] = result.get("message")
+        else:
+            response_data["stopped"] = result.get("stopped")
+
+        output_json(format_success("start", response_data))
 
     except Exception as e:
         _stop_daemon()
