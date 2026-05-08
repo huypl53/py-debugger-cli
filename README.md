@@ -35,6 +35,7 @@ Then use `/cc-debug` to debug Python programs with guided workflows.
 ## Features
 
 - **Agent-first design**: JSON output, blocking commands, source context in every stop
+- **Token-efficient**: `--compact`, `--changed`, `--limit`, auto-truncate large values
 - **Full debugging**: Breakpoints, stepping, variable inspection, expression evaluation
 - **State tracking**: Track variable changes between steps, watch expressions
 - **Stack navigation**: Move up/down call stack, modify variables in any frame
@@ -137,6 +138,7 @@ cc-debug pm <traceback-file>                       # Post-mortem debug from cras
 ```bash
 cc-debug continue          # Run until breakpoint (blocks)
 cc-debug next              # Step over
+cc-debug next -c           # Step over (compact output, reduced tokens)
 cc-debug step              # Step into
 cc-debug stepout           # Step out
 cc-debug pause             # Pause execution
@@ -167,6 +169,10 @@ cc-debug stack              # Call stack with locals
 cc-debug vars               # Variables in current scope
 cc-debug vars --all         # All scopes
 cc-debug vars --depth 3     # Recursive expansion (nested objects)
+cc-debug vars --changed     # Only changed variables (token-efficient)
+cc-debug vars --limit 5     # Top 5 most interesting variables
+cc-debug vars --names-only  # Just names, no values
+cc-debug vars --no-truncate # Disable auto-truncation of large values
 cc-debug eval "<expr>"      # Evaluate expression
 cc-debug set "x = 42"       # Modify variable value
 cc-debug up                 # Move up one stack frame (to caller)
@@ -177,13 +183,18 @@ cc-debug source app.py:100  # Show source at specific location
 cc-debug output             # Show program stdout/stderr
 cc-debug output --clear     # Clear output buffer after reading
 cc-debug output -f          # Stream output continuously (like tail -f)
+cc-debug why                # Explain why execution stopped (one-line)
+cc-debug inspect            # Batch: location + vars + stack in one call
+cc-debug snapshot           # Full state dump for context recovery
+cc-debug summary            # One-line state summary (minimal tokens)
 ```
 
 ### Watch Expressions
 
 ```bash
 cc-debug watch add "<expr>" # Add watch expression
-cc-debug watch list         # List watches
+cc-debug watch list         # List watches with values
+cc-debug watch diff         # Show only changed watches (token-efficient)
 cc-debug watch del "<expr>" # Remove watch
 cc-debug watch clear        # Clear all
 ```
