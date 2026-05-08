@@ -201,6 +201,3 @@ cc-debug bp set server.py:100   # Set breakpoint
 cc-debug vars                   # Inspect state
 ```
 
-## Reference
-
-Full command details: `references/command-reference.md`
