@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cc-debugger"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python debugger CLI for coding agents"
 readme = "README.md"
 license = "MIT"
