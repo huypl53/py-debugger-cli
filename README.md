@@ -43,6 +43,7 @@ Then use `/cc-debug` to debug Python programs with guided workflows.
 - **Time-travel**: Record execution and navigate through checkpoints
 - **Post-mortem**: Debug from crash tracebacks without re-running
 - **Program I/O**: Capture stdout/stderr from debugged program
+- **Venv integration**: Auto-detect project venv with `--uv`, or specify with `--python`
 
 ## Installation
 
@@ -76,8 +77,11 @@ Requires Python 3.12+ and `debugpy` for the debug adapter.
 ## Quick Start
 
 ```bash
-# Start debugging
+# Start debugging (uses cc-debug's Python)
 cc-debug start myapp.py
+
+# Start debugging with project's venv (recommended for projects)
+cc-debug start myapp.py --uv
 
 # Set breakpoint
 cc-debug bp set myapp.py:42
@@ -274,6 +278,32 @@ Run: cc-debug continue
 ```
 
 All commands return JSON for agent parsing and decision-making.
+
+## Debugging Projects with Different Venvs
+
+When debugging a script that uses packages from its own virtual environment:
+
+### Recommended: Use `--uv` flag
+
+```bash
+# Automatically detects .venv, installs debugpy if needed
+cc-debug start myproject/main.py --uv
+```
+
+The `--uv` flag:
+1. Walks up from target file to find `.venv` directory
+2. Auto-installs `debugpy` in that venv using `uv pip`
+3. Uses that venv's Python interpreter for debugging
+
+### Manual: Use `--python` flag
+
+```bash
+# First install debugpy in the target venv
+cd myproject && uv pip install debugpy
+
+# Then debug with explicit Python path
+cc-debug start main.py --python .venv/bin/python
+```
 
 ## Architecture
 
