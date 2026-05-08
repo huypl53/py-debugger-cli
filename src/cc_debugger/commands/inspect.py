@@ -4,7 +4,7 @@
 import click
 
 from cc_debugger.commands.session import _send_to_daemon
-from cc_debugger.output import format_error, format_success, output_json
+from cc_debugger.output import format_error, format_success, output_json, print_program_output
 
 
 @click.command()
@@ -189,8 +189,13 @@ def output(clear: bool) -> None:
         if not result.get("success"):
             raise RuntimeError(result.get("error", "Unknown error"))
 
+        lines = result.get("lines", [])
+        # Print to stderr for user visibility
+        if lines:
+            print_program_output(lines)
+
         output_json(format_success("output", {
-            "lines": result.get("lines", []),
+            "lines": lines,
             "count": result.get("count", 0),
         }))
 

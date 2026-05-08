@@ -3,7 +3,7 @@
 import click
 
 from cc_debugger.commands.session import _send_to_daemon
-from cc_debugger.output import format_error, format_success, output_json
+from cc_debugger.output import format_error, format_success, output_json, print_program_output
 
 
 @click.command("continue")
@@ -15,6 +15,10 @@ def continue_cmd() -> None:
         if not result.get("success"):
             raise RuntimeError(result.get("error"))
 
+        # Print program output to stderr for user visibility
+        if result.get("output"):
+            print_program_output(result["output"])
+
         data = {
             "event": "stopped",
             "reason": result.get("reason"),
@@ -25,6 +29,8 @@ def continue_cmd() -> None:
             data["changedVars"] = result["changedVars"]
         if result.get("watches"):
             data["watches"] = result["watches"]
+        if result.get("output"):
+            data["output"] = result["output"]
 
         output_json(format_success("continue", data))
 
@@ -42,6 +48,10 @@ def next_cmd() -> None:
         if not result.get("success"):
             raise RuntimeError(result.get("error"))
 
+        # Print program output to stderr for user visibility
+        if result.get("output"):
+            print_program_output(result["output"])
+
         data = {
             "event": "stopped",
             "reason": result.get("reason"),
@@ -52,6 +62,8 @@ def next_cmd() -> None:
             data["changedVars"] = result["changedVars"]
         if result.get("watches"):
             data["watches"] = result["watches"]
+        if result.get("output"):
+            data["output"] = result["output"]
 
         output_json(format_success("next", data))
 
@@ -69,6 +81,10 @@ def step() -> None:
         if not result.get("success"):
             raise RuntimeError(result.get("error"))
 
+        # Print program output to stderr for user visibility
+        if result.get("output"):
+            print_program_output(result["output"])
+
         data = {
             "event": "stopped",
             "reason": result.get("reason"),
@@ -79,6 +95,8 @@ def step() -> None:
             data["changedVars"] = result["changedVars"]
         if result.get("watches"):
             data["watches"] = result["watches"]
+        if result.get("output"):
+            data["output"] = result["output"]
 
         output_json(format_success("step", data))
 
@@ -96,6 +114,10 @@ def stepout() -> None:
         if not result.get("success"):
             raise RuntimeError(result.get("error"))
 
+        # Print program output to stderr for user visibility
+        if result.get("output"):
+            print_program_output(result["output"])
+
         data = {
             "event": "stopped",
             "reason": result.get("reason"),
@@ -106,6 +128,8 @@ def stepout() -> None:
             data["changedVars"] = result["changedVars"]
         if result.get("watches"):
             data["watches"] = result["watches"]
+        if result.get("output"):
+            data["output"] = result["output"]
 
         output_json(format_success("stepout", data))
 
@@ -137,6 +161,10 @@ def until(line: int) -> None:
             output_json(format_error("until", error_code, message))
             raise SystemExit(1)
 
+        # Print program output to stderr for user visibility
+        if result.get("output"):
+            print_program_output(result["output"])
+
         data = {
             "event": "stopped",
             "reason": result.get("reason"),
@@ -147,6 +175,8 @@ def until(line: int) -> None:
             data["changedVars"] = result["changedVars"]
         if result.get("watches"):
             data["watches"] = result["watches"]
+        if result.get("output"):
+            data["output"] = result["output"]
 
         output_json(format_success("until", data))
 
@@ -178,6 +208,10 @@ def run_to_cursor(location: str) -> None:
             output_json(format_error("run-to-cursor", error_code, message))
             raise SystemExit(1)
 
+        # Print program output to stderr for user visibility
+        if result.get("output"):
+            print_program_output(result["output"])
+
         data = {
             "event": "stopped",
             "reason": result.get("reason"),
@@ -189,6 +223,8 @@ def run_to_cursor(location: str) -> None:
             data["changedVars"] = result["changedVars"]
         if result.get("watches"):
             data["watches"] = result["watches"]
+        if result.get("output"):
+            data["output"] = result["output"]
 
         output_json(format_success("run-to-cursor", data))
 

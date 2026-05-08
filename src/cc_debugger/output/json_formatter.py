@@ -1,6 +1,7 @@
 """JSON output formatting."""
 
 import json
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +11,24 @@ from cc_debugger.models.session import Location
 def output_json(data: dict[str, Any]) -> None:
     """Output JSON to stdout."""
     print(json.dumps(data, indent=2))
+
+
+def print_program_output(output_lines: list[dict]) -> None:
+    """Print program stdout/stderr to stderr so users can see it.
+
+    Output format: [stdout] or [stderr] prefix followed by content.
+    """
+    if not output_lines:
+        return
+    for item in output_lines:
+        category = item.get("category", "stdout")
+        content = item.get("output", "")
+        if content:
+            prefix = f"[{category}] " if category == "stderr" else ""
+            sys.stderr.write(f"{prefix}{content}")
+            if not content.endswith("\n"):
+                sys.stderr.write("\n")
+    sys.stderr.flush()
 
 
 def format_success(command: str, result: dict[str, Any]) -> dict[str, Any]:

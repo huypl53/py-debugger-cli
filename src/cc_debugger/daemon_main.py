@@ -574,7 +574,10 @@ class DaemonServer:
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
-                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx}
+                # Include and clear output buffer
+                output_lines = list(self.output_buffer)
+                self.output_buffer.clear()
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx, "output": output_lines}
                 if auto_cp:
                     result["checkpoint"] = auto_cp
                 return result
@@ -584,13 +587,16 @@ class DaemonServer:
                     return {"success": False, "error": "No session"}
                 self._reset_frame_idx()
                 ev = self.session.step_and_wait("next")
+                self._drain_output_events()
                 loc = self.session.get_location()
                 self._record_trace(loc)
                 changed = self._detect_changes()
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
-                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx}
+                output_lines = list(self.output_buffer)
+                self.output_buffer.clear()
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx, "output": output_lines}
                 if auto_cp:
                     result["checkpoint"] = auto_cp
                 return result
@@ -600,13 +606,16 @@ class DaemonServer:
                     return {"success": False, "error": "No session"}
                 self._reset_frame_idx()
                 ev = self.session.step_and_wait("stepIn")
+                self._drain_output_events()
                 loc = self.session.get_location()
                 self._record_trace(loc)
                 changed = self._detect_changes()
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
-                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx}
+                output_lines = list(self.output_buffer)
+                self.output_buffer.clear()
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx, "output": output_lines}
                 if auto_cp:
                     result["checkpoint"] = auto_cp
                 return result
@@ -616,13 +625,16 @@ class DaemonServer:
                     return {"success": False, "error": "No session"}
                 self._reset_frame_idx()
                 ev = self.session.step_and_wait("stepOut")
+                self._drain_output_events()
                 loc = self.session.get_location()
                 self._record_trace(loc)
                 changed = self._detect_changes()
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
-                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx}
+                output_lines = list(self.output_buffer)
+                self.output_buffer.clear()
+                result = {"success": True, "reason": ev["body"].get("reason"), "location": loc, "changedVars": changed, "watches": watches, "source_context": source_ctx, "output": output_lines}
                 if auto_cp:
                     result["checkpoint"] = auto_cp
                 return result
@@ -701,10 +713,13 @@ class DaemonServer:
                 try:
                     self.session._send("continue", {"threadId": self.session.thread_id})
                     ev = self.session._wait_event("stopped", timeout=None)
+                    self._drain_output_events()
                     loc = self.session.get_location()
                     changed = self._detect_changes()
                     watches = self._eval_watches() if self.watches else {}
                     source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))
+                    output_lines = list(self.output_buffer)
+                    self.output_buffer.clear()
                     return {
                         "success": True,
                         "reason": ev["body"].get("reason"),
@@ -713,6 +728,7 @@ class DaemonServer:
                         "watches": watches,
                         "source_context": source_ctx,
                         "temp_bp_removed": True,
+                        "output": output_lines,
                     }
                 finally:
                     self._remove_temp_breakpoint(file, line)
@@ -732,10 +748,13 @@ class DaemonServer:
                 try:
                     self.session._send("continue", {"threadId": self.session.thread_id})
                     ev = self.session._wait_event("stopped", timeout=None)
+                    self._drain_output_events()
                     new_loc = self.session.get_location()
                     changed = self._detect_changes()
                     watches = self._eval_watches() if self.watches else {}
                     source_ctx = self._get_source_context(new_loc.get("file", ""), new_loc.get("line", 0))
+                    output_lines = list(self.output_buffer)
+                    self.output_buffer.clear()
                     return {
                         "success": True,
                         "reason": ev["body"].get("reason"),
@@ -743,6 +762,7 @@ class DaemonServer:
                         "changedVars": changed,
                         "watches": watches,
                         "source_context": source_ctx,
+                        "output": output_lines,
                     }
                 finally:
                     self._remove_temp_breakpoint(current_file, target_line)

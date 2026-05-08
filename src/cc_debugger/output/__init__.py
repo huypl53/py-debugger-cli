@@ -7,6 +7,7 @@ from cc_debugger.output.json_formatter import (
     format_success,
     format_variables,
     output_json,
+    print_program_output,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "format_stopped",
     "format_variables",
     "OutputFormatter",
+    "print_program_output",
 ]
