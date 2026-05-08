@@ -161,26 +161,44 @@ def stack(depth: int) -> None:
 @click.option("--all", "show_all", is_flag=True, help="Show all scopes")
 @click.option("--depth", default=0, help="Recursive expansion depth (0=no expansion)")
 @click.option("--names-only", is_flag=True, help="List variable names only (reduces tokens)")
-def vars_cmd(show_all: bool, depth: int, names_only: bool) -> None:
+@click.option("--changed", is_flag=True, help="Show only changed variables since last stop")
+@click.option("--limit", type=int, default=None, help="Limit to N most interesting variables")
+@click.option("--no-truncate", is_flag=True, help="Disable auto-truncation of large values")
+def vars_cmd(show_all: bool, depth: int, names_only: bool, changed: bool, limit: int | None, no_truncate: bool) -> None:
     """Show variables in current scope."""
     try:
-        result = _send_to_daemon({"action": "vars", "depth": depth})
+        result = _send_to_daemon({
+            "action": "vars",
+            "depth": depth,
+            "changed_only": changed,
+            "limit": limit,
+            "truncate": not no_truncate,
+        })
 
         if not result.get("success"):
             raise RuntimeError(result.get("error"))
 
         variables = result.get("variables", {})
+        total_count = result.get("total_count", len(variables))
+        changed_vars = result.get("changed", [])
 
         if names_only:
             # Just list names for reduced token usage
             output_json(format_success("vars", {
                 "names": list(variables.keys()),
                 "count": len(variables),
+                "total": total_count,
             }))
         else:
-            data = {"Locals": variables}
+            data: dict = {"Locals": variables}
             if result.get("frame_index", 0) > 0:
                 data["frame_index"] = result["frame_index"]
+            if changed_vars:
+                data["changed"] = changed_vars
+            if limit and total_count > limit:
+                data["shown"] = len(variables)
+                data["total"] = total_count
+                data["limited"] = True
             output_json(format_success("vars", data))
 
     except Exception as e:
@@ -308,4 +326,36 @@ def summary() -> None:
 
     except Exception as e:
         output_json(format_error("summary", "SUMMARY_FAILED", str(e)))
+        raise SystemExit(1) from None
+
+
+@click.command()
+def why() -> None:
+    """Explain why execution stopped (one-line summary)."""
+    try:
+        result = _send_to_daemon({"action": "why"})
+
+        if not result.get("success"):
+            raise RuntimeError(result.get("error", "Unknown error"))
+
+        data = result.get("data", {})
+        # Print the summary line
+        print(data.get("summary", "Unknown stop reason"))
+
+        # Also output JSON for agents
+        output_json(format_success("why", data))
+
+    except RuntimeError as e:
+        if "No debug session" in str(e):
+            print("No active debug session")
+            output_json(format_success("why", {
+                "reason": "no_session",
+                "summary": "No active debug session",
+                "details": {},
+            }))
+        else:
+            output_json(format_error("why", "WHY_FAILED", str(e)))
+            raise SystemExit(1) from None
+    except Exception as e:
+        output_json(format_error("why", "WHY_FAILED", str(e)))
         raise SystemExit(1) from None

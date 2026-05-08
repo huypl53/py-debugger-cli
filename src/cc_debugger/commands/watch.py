@@ -82,3 +82,23 @@ def watch_clear() -> None:
     except RuntimeError as e:
         output_json(format_error("watch clear", "NO_SESSION", str(e)))
         raise SystemExit(1) from None
+
+
+@watch.command("diff")
+def watch_diff() -> None:
+    """Show only watches that changed since last evaluation (reduces tokens)."""
+    try:
+        result = _send_to_daemon({"action": "watch_diff"})
+        if result.get("success"):
+            changed = result.get("changed", [])
+            unchanged_count = result.get("unchanged_count", 0)
+            output_json(format_success("watch diff", {
+                "changed": changed,
+                "unchanged_count": unchanged_count,
+            }))
+        else:
+            output_json(format_error("watch diff", "WATCH_FAILED", result.get("error", "Unknown error")))
+            raise SystemExit(1) from None
+    except RuntimeError as e:
+        output_json(format_error("watch diff", "NO_SESSION", str(e)))
+        raise SystemExit(1) from None

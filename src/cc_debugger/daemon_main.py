@@ -291,6 +291,11 @@ class DaemonServer:
         self.steps_since_checkpoint = 0
         self.checkpoint_size_bytes = 0
         self.max_checkpoint_bytes = 50 * 1024 * 1024  # 50MB limit
+        # Stop reason tracking for 'why' command
+        self._last_stop_reason: str = "entry"
+        self._prev_watch_values: dict[str, str | None] = {}
+        # Track last changed vars from step commands
+        self._last_changed_vars: list[str] = []
 
     def _get_source_context(self, file: str, line: int, context: int = 5) -> list[dict]:
         """Get source lines around current location."""
@@ -589,9 +594,11 @@ class DaemonServer:
                 self.session._send("continue", {"threadId": self.session.thread_id})
                 ev = self.session._wait_event("stopped", timeout=None)
                 self._drain_output_events()
+                self._last_stop_reason = ev["body"].get("reason", "breakpoint")
                 loc = self.session.get_location()
                 self._record_trace(loc)
                 changed = self._detect_changes()
+                self._last_changed_vars = list(changed)  # Save for vars --changed
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
@@ -609,9 +616,11 @@ class DaemonServer:
                 self._reset_frame_idx()
                 ev = self.session.step_and_wait("next")
                 self._drain_output_events()
+                self._last_stop_reason = "step"
                 loc = self.session.get_location()
                 self._record_trace(loc)
                 changed = self._detect_changes()
+                self._last_changed_vars = list(changed)
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
@@ -628,9 +637,11 @@ class DaemonServer:
                 self._reset_frame_idx()
                 ev = self.session.step_and_wait("stepIn")
                 self._drain_output_events()
+                self._last_stop_reason = "step"
                 loc = self.session.get_location()
                 self._record_trace(loc)
                 changed = self._detect_changes()
+                self._last_changed_vars = list(changed)  # Save for vars --changed
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
@@ -647,9 +658,11 @@ class DaemonServer:
                 self._reset_frame_idx()
                 ev = self.session.step_and_wait("stepOut")
                 self._drain_output_events()
+                self._last_stop_reason = "step"
                 loc = self.session.get_location()
                 self._record_trace(loc)
                 changed = self._detect_changes()
+                self._last_changed_vars = list(changed)  # Save for vars --changed
                 watches = self._eval_watches() if self.watches else {}
                 auto_cp = self._on_step()
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0), cmd.get("context", 5))
@@ -823,10 +836,15 @@ class DaemonServer:
                     return {"success": False, "error": "No session"}
                 frame_id = self._get_frame_id()
                 depth = cmd.get("depth", 0)
+                changed_only = cmd.get("changed_only", False)
+                limit = cmd.get("limit")
+                do_truncate = cmd.get("truncate", True)
+
                 if not frame_id:
                     return {"success": True, "variables": {}, "frame_index": self.current_frame_idx}
+
                 scopes = self.session.send_and_wait("scopes", {"frameId": frame_id})
-                result = {}
+                all_vars = {}
                 for scope in scopes.get("body", {}).get("scopes", []):
                     if scope["name"] in ("Locals", "Arguments"):
                         vars_resp = self.session.send_and_wait("variables", {
@@ -836,8 +854,33 @@ class DaemonServer:
                             var_info: dict = {"type": v.get("type"), "value": v["value"]}
                             if depth > 0 and v.get("variablesReference", 0) > 0:
                                 var_info["children"] = self._expand_variables(v["variablesReference"], depth - 1)
-                            result[v["name"]] = var_info
-                return {"success": True, "variables": result, "frame_index": self.current_frame_idx}
+                            all_vars[v["name"]] = var_info
+
+                total_count = len(all_vars)
+                # Use saved changed vars from last step (don't call _detect_changes again)
+                changed = self._last_changed_vars
+
+                # Apply --changed filter
+                if changed_only:
+                    all_vars = {k: v for k, v in all_vars.items() if k in changed}
+
+                # Apply --limit
+                if limit is not None and limit > 0:
+                    from cc_debugger.core.state import limit_variables
+                    all_vars = limit_variables(all_vars, limit, list(changed), only_changed=changed_only)
+
+                # Apply truncation
+                if do_truncate:
+                    from cc_debugger.core.truncate import truncate_variables
+                    all_vars = truncate_variables(all_vars)
+
+                return {
+                    "success": True,
+                    "variables": all_vars,
+                    "frame_index": self.current_frame_idx,
+                    "changed": list(changed),
+                    "total_count": total_count,
+                }
 
             elif action == "eval":
                 if not self.session:
@@ -904,6 +947,28 @@ class DaemonServer:
                 count = len(self.watches)
                 self.watches.clear()
                 return {"success": True, "removed": count}
+
+            elif action == "watch_diff":
+                # Return only watches that changed since last evaluation
+                if not self.watches:
+                    return {"success": True, "changed": [], "unchanged_count": 0}
+                values = self._eval_watches() if self.session else {}
+                changed = []
+                unchanged_count = 0
+                for expr, info in values.items():
+                    if info.get("changed") or info.get("error"):
+                        changed.append({
+                            "expression": expr,
+                            "value": info.get("value"),
+                            "type": info.get("type"),
+                            "previous": self._prev_watch_values.get(expr) if hasattr(self, "_prev_watch_values") else None,
+                            "error": info.get("error"),
+                        })
+                    else:
+                        unchanged_count += 1
+                # Store for next diff
+                self._prev_watch_values = {expr: info.get("value") for expr, info in values.items()}
+                return {"success": True, "changed": changed, "unchanged_count": unchanged_count}
 
             elif action == "record_start":
                 self.recording = True
@@ -1171,6 +1236,30 @@ class DaemonServer:
                 if self.trace_active:
                     parts.append("tracing")
                 return {"success": True, "data": {"summary": " | ".join(parts)}}
+
+            elif action == "why":
+                # Explain why execution stopped
+                if not self.session:
+                    return {"success": False, "error": "No session"}
+                from cc_debugger.core.why import format_why
+                loc = self.session.get_location()
+                # Determine stop reason from last event or state
+                stop_info = {
+                    "reason": self._last_stop_reason if hasattr(self, "_last_stop_reason") else "step",
+                    "location": loc,
+                }
+                # Add breakpoint info if stopped at breakpoint
+                if hasattr(self, "_last_stop_reason") and self._last_stop_reason == "breakpoint":
+                    file = loc.get("file", "")
+                    line = loc.get("line", 0)
+                    for i, bp in enumerate(self.breakpoints.get(file, [])):
+                        if bp.get("line") == line:
+                            stop_info["breakpoint_id"] = i + 1
+                            if bp.get("condition"):
+                                stop_info["condition"] = bp["condition"]
+                            break
+                result = format_why(stop_info)
+                return {"success": True, "data": result}
 
             elif action == "quit":
                 if self.session:

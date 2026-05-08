@@ -39,6 +39,7 @@ class WatchResult:
     type: str | None
     changed: bool
     error: str | None = None
+    previous: str | None = None
 
 
 class StateTracker:
@@ -130,20 +131,39 @@ class StateTracker:
                     value=new_value,
                     type=new_type,
                     changed=prev_value is not None and new_value != prev_value,
+                    previous=prev_value,
                 )
 
                 self.watches[expr] = new_value
 
             except Exception as e:
+                # Error is a change if we had a value before
                 results[expr] = WatchResult(
-                    value=None,
+                    value=f"Error: {e}",
                     type=None,
-                    changed=False,
+                    changed=prev_value is not None,
                     error=str(e),
+                    previous=prev_value,
                 )
 
         self.watch_results = results
         return results
+
+    def get_watch_diff(self) -> list[dict]:
+        """Get only watches that changed since last evaluation."""
+        diff = []
+        for expr, result in self.watch_results.items():
+            if result.changed or result.error:
+                entry = {
+                    "expression": expr,
+                    "value": result.value,
+                    "type": result.type,
+                    "previous": result.previous,
+                }
+                if result.error:
+                    entry["error"] = result.error
+                diff.append(entry)
+        return diff
 
     def get_frame_variables(self, frame_id: int) -> dict[str, dict[str, Any]]:
         """Get variables for a frame."""
@@ -155,3 +175,87 @@ class StateTracker:
             name: {"type": v.type, "value": v.value}
             for name, v in snapshot.variables.items()
         }
+
+    def get_changed_variables(
+        self,
+        frame_id: int,
+        changed_names: set[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Get only changed variables with their previous values."""
+        snapshot = self.snapshots.get(frame_id)
+        if not snapshot:
+            return {}
+
+        result = {}
+        for name in changed_names:
+            if name.startswith("-"):
+                # Deleted variable
+                continue
+            if name in snapshot.variables:
+                var = snapshot.variables[name]
+                result[name] = {"type": var.type, "value": var.value}
+
+        return result
+
+
+def limit_variables(
+    variables: dict[str, dict],
+    limit: int,
+    changed: list[str] | None = None,
+    only_changed: bool = False,
+) -> dict[str, dict]:
+    """
+    Limit variables to top N most interesting.
+
+    Interest scoring (highest first):
+    1. Recently changed
+    2. Non-None values
+    3. Smaller/simpler types
+    4. Alphabetical tiebreaker
+
+    Args:
+        variables: Dict of variable name -> info
+        limit: Max variables to return
+        changed: List of changed variable names
+        only_changed: If True, only include changed variables
+
+    Returns:
+        Limited dict of variables
+    """
+    if limit < 0:
+        raise ValueError("Limit must be non-negative")
+
+    if limit == 0:
+        return {}
+
+    changed_set = set(changed or [])
+
+    def interest_score(name: str) -> tuple:
+        """Higher score = more interesting. Returns tuple for sorting."""
+        info = variables[name]
+        is_changed = name in changed_set
+        value = info.get("value", "")
+        var_type = info.get("type", "")
+        is_none = value == "None" or var_type == "NoneType"
+        # Estimate size from value length
+        is_large = len(value) > 200
+
+        return (
+            is_changed,      # Changed first (True > False)
+            not is_none,     # Non-None second
+            not is_large,    # Smaller values preferred
+            name,            # Alphabetical tiebreaker
+        )
+
+    if only_changed:
+        candidates = {k: v for k, v in variables.items() if k in changed_set}
+    else:
+        candidates = variables
+
+    sorted_names = sorted(
+        candidates.keys(),
+        key=interest_score,
+        reverse=True,
+    )[:limit]
+
+    return {name: variables[name] for name in sorted_names}
