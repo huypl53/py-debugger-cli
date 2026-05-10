@@ -11,6 +11,22 @@ from cc_debugger.commands.trace import trace
 from cc_debugger.commands.time_travel import goto, step_back, step_forward
 from cc_debugger.commands.watch import watch
 
+# Web UI
+from cc_debugger import web_ui_server
+
+
+@click.command("web")
+def web_ui() -> None:
+    """Launch the web dashboard (opens in browser)."""
+    try:
+        import webbrowser
+        import uvicorn
+        webbrowser.open("http://127.0.0.1:8080")
+        uvicorn.run(web_ui_server.app, host="127.0.0.1", port=8080)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+
 
 @click.group()
 @click.version_option(package_name="cc-debugger")
@@ -73,6 +89,9 @@ main.add_command(trace)
 
 # Post-mortem
 main.add_command(pm)
+
+# Web UI
+main.add_command(web_ui)
 
 
 if __name__ == "__main__":
