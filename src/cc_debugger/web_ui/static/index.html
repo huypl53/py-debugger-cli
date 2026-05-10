@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CC-Debugger Dashboard</title>
+    <style>
+        :root {
+            --bg-primary: #1e1e1e;
+            --bg-secondary: #252526;
+            --bg-tertiary: #2d2d30;
+            --bg-hover: #2a2d2e;
+            --fg-primary: #cccccc;
+            --fg-secondary: #858585;
+            --fg-muted: #6a6a6a;
+            --accent: #0e639c;
+            --accent-light: #1177bb;
+            --border: #3c3c3c;
+            --border-light: #454545;
+            --red: #f85149;
+            --yellow: #dcdcaa;
+            --green: #4ec9b0;
+            --blue: #569cd6;
+            --orange: #ce9178;
+            --pink: #c586c0;
+            --current-line-bg: #264f78;
+        }
+        
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg-primary);
+            color: var(--fg-primary);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            font-size: 13px;
+            overflow: hidden;
+        }
+        
+        .header {
+            background: var(--bg-secondary);
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            min-height: 35px;
+        }
+        
+        .header h1 { font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+        .header h1::before { content: '🐛'; }
+        
+        .status { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--fg-muted);
+        }
+        
+        .status-dot.connected {
+            background: var(--green);
+            box-shadow: 0 0 6px var(--green);
+        }
+        
+        .toolbar {
+            display: flex;
+            gap: 4px;
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .btn {
+            padding: 4px 10px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .btn:hover:not(:disabled) { background: var(--accent-light); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn.danger { background: var(--red); }
+        
+        .main-content { display: flex; flex: 1; overflow: hidden; }
+        
+        .sidebar {
+            width: 280px;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .panel {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 12px;
+            background: var(--bg-tertiary);
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--fg-secondary);
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .panel-header:hover { background: var(--bg-hover); }
+        .panel-content { flex: 1; overflow: auto; min-height: 0; }
+        
+        .editor-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        
+        .source-view {
+            flex: 1;
+            overflow: auto;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+        
+        .source-line {
+            padding: 0 8px;
+            min-height: 18px;
+            white-space: pre;
+        }
+        
+        .source-line:hover { background: var(--bg-hover); }
+        .source-line.current { background: var(--current-line-bg); }
+        
+        .line-num {
+            color: var(--fg-muted);
+            display: inline-block;
+            width: 40px;
+            text-align: right;
+            padding-right: 12px;
+            user-select: none;
+        }
+        
+        .source-line.current .line-num { color: var(--fg-primary); }
+        
+        .variables-panel {
+            width: 300px;
+            background: var(--bg-secondary);
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .var-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .var-table th { text-align: left; padding: 4px 8px; color: var(--fg-secondary); font-weight: normal; font-size: 11px; border-bottom: 1px solid var(--border); }
+        .var-table td { padding: 3px 8px; border-bottom: 1px solid var(--border); }
+        .var-name { color: #9cdcfe; }
+        .var-value { color: var(--orange); }
+        .var-type { color: var(--green); font-size: 11px; }
+        
+        .stack-frame {
+            padding: 4px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            border-left: 2px solid transparent;
+        }
+        
+        .stack-frame:hover { background: var(--bg-hover); }
+        .stack-frame.active { background: var(--accent); border-left-color: var(--accent-light); }
+        .stack-frame-name { color: var(--yellow); }
+        .stack-frame-loc { color: var(--fg-secondary); font-size: 11px; }
+        
+        .bp-item {
+            padding: 4px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        
+        .bp-item:hover { background: var(--bg-hover); }
+        .bp-icon { color: var(--red); }
+        
+        .watch-item { padding: 4px 12px; font-size: 12px; }
+        .watch-expr { color: var(--pink); }
+        .watch-val { color: var(--orange); margin-left: 8px; }
+        
+        .output-panel {
+            height: 150px;
+            background: var(--bg-primary);
+            border-top: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .output-content {
+            flex: 1;
+            overflow: auto;
+            padding: 8px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        
+        .output-line { margin-bottom: 2px; }
+        .output-line.stdout { color: var(--fg-primary); }
+        .output-line.stderr { color: var(--red); }
+        
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--fg-muted);
+            font-size: 13px;
+            gap: 8px;
+        }
+        
+        .location-bar {
+            padding: 4px 12px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--fg-secondary);
+        }
+        
+        .location-bar .file { color: var(--yellow); }
+        .location-bar .func { color: var(--green); }
+
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-track { background: var(--bg-primary); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>CC-Debugger</h1>
+        <div class="status">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-text">Disconnected</span>
+        </div>
+    </header>
+    
+    <div class="toolbar">
+        <button class="btn" id="btn-continue" onclick="sendCommand({action:'continue'})" disabled>▶ Continue</button>
+        <button class="btn" id="btn-step" onclick="sendCommand({action:'step'})" disabled>⏭ Step</button>
+        <button class="btn" id="btn-next" onclick="sendCommand({action:'next'})" disabled>⏭ Next</button>
+        <button class="btn" id="btn-stepout" onclick="sendCommand({action:'stepout'})" disabled>⏮ Step Out</button>
+        <button class="btn secondary" onclick="sendCommand({action:'pause'})" disabled>⏸ Pause</button>
+        <button class="btn danger" onclick="sendCommand({action:'quit'})">⏹ Quit</button>
+    </div>
+    
+    <div class="main-content">
+        <div class="sidebar">
+            <div class="panel" id="panel-callstack">
+                <div class="panel-header">CALL STACK</div>
+                <div class="panel-content" id="callstack-content">
+                    <div class="empty-state"><span>No call stack</span></div>
+                </div>
+            </div>
+            
+            <div class="panel" id="panel-breakpoints">
+                <div class="panel-header">BREAKPOINTS</div>
+                <div class="panel-content" id="breakpoints-content">
+                    <div class="empty-state"><span>No breakpoints</span></div>
+                </div>
+            </div>
+            
+            <div class="panel" id="panel-watches">
+                <div class="panel-header">WATCH</div>
+                <div class="panel-content" id="watches-content">
+                    <div class="empty-state"><span>No watches</span></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="editor-area">
+            <div class="location-bar" id="location-bar">
+                <span class="empty">No active session</span>
+            </div>
+            
+            <div class="source-view" id="source-view">
+                <div class="empty-state">
+                    <span>🐛</span>
+                    <span>Start debugging to see code</span>
+                </div>
+            </div>
+            
+            <div class="output-panel">
+                <div class="panel-header">OUTPUT</div>
+                <div class="output-content" id="output-content"></div>
+            </div>
+        </div>
+        
+        <div class="variables-panel">
+            <div class="panel" style="flex:1">
+                <div class="panel-header">VARIABLES</div>
+                <div class="panel-content" id="variables-content">
+                    <div class="empty-state"><span>No variables</span></div>
+                </div>
+            </div>
+            
+            <div class="panel" style="flex:1">
+                <div class="panel-header">LOCALS</div>
+                <div class="panel-content" id="locals-content">
+                    <div class="empty-state"><span>No locals</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let ws = null;
+        let retryCount = 0;
+        const MAX_RETRIES = 10;
+        
+        function connect() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(protocol + '//' + location.host + '/ws');
+            
+            ws.onopen = () => {
+                retryCount = 0;
+                updateStatus('connected', 'Connected');
+                enableButtons(true);
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.success !== undefined) {
+                    updateDashboard(data);
+                }
+            };
+            
+            ws.onclose = () => {
+                updateStatus('disconnected', 'Disconnected');
+                enableButtons(false);
+                
+                if (retryCount < MAX_RETRIES) {
+                    retryCount++;
+                    setTimeout(connect, 2000);
+                }
+            };
+            
+            ws.onerror = () => {
+                updateStatus('error', 'Error');
+            };
+        }
+        
+        function sendCommand(cmd) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(cmd));
+            }
+        }
+        
+        function updateStatus(state, text) {
+            const dot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+            dot.className = 'status-dot ' + state;
+            statusText.textContent = text;
+        }
+        
+        function enableButtons(enabled) {
+            const ids = ['btn-continue', 'btn-step', 'btn-next', 'btn-stepout'];
+            for (const id of ids) {
+                document.getElementById(id).disabled = !enabled;
+            }
+        }
+        
+        function escapeHtml(text) {
+            if (!text) return '';
+            return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+        
+        function updateDashboard(data) {
+            const d = data.data || {};
+            const loc = d.location || {};
+            
+            const locBar = document.getElementById('location-bar');
+            if (loc.file) {
+                const fileName = loc.file.split('/').pop();
+                locBar.innerHTML = `<span class="file">${escapeHtml(fileName)}</span>:<span>${loc.line}</span> in <span class="func">${escapeHtml(loc.function || '?')}</span>`;
+            } else {
+                locBar.innerHTML = '<span class="empty">No active session</span>';
+            }
+            
+            const sourceView = document.getElementById('source-view');
+            const ctx = d.source_context || [];
+            if (ctx.length > 0) {
+                let html = '';
+                for (const line of ctx) {
+                    const cls = line.current ? 'source-line current' : 'source-line';
+                    html += `<div class="${cls}"><span class="line-num">${line.number}</span>${escapeHtml(line.content)}</div>`;
+                }
+                sourceView.innerHTML = html;
+            } else {
+                sourceView.innerHTML = '<div class="empty-state"><span>🐛</span><span>Start debugging to see code</span></div>';
+            }
+            
+            const stackContent = document.getElementById('callstack-content');
+            const stack = d.stack || [];
+            if (stack.length > 0) {
+                let html = '';
+                for (const frame of stack) {
+                    const fileName = (frame.file || '?').split('/').pop();
+                    html += `<div class="stack-frame"><span class="stack-frame-name">${escapeHtml(frame.name || '?')}</span><br><span class="stack-frame-loc">${escapeHtml(fileName)}:${frame.line}</span></div>`;
+                }
+                stackContent.innerHTML = html;
+            } else {
+                stackContent.innerHTML = '<div class="empty-state"><span>No call stack</span></div>';
+            }
+            
+            const bpContent = document.getElementById('breakpoints-content');
+            const bps = d.breakpoints || {};
+            const bpFiles = Object.keys(bps);
+            if (bpFiles.length > 0) {
+                let html = '';
+                for (const file of bpFiles) {
+                    const fileName = file.split('/').pop();
+                    for (const bp of bps[file]) {
+                        html += `<div class="bp-item"><span class="bp-icon">●</span>${escapeHtml(fileName)}:${bp.line}</div>`;
+                    }
+                }
+                bpContent.innerHTML = html;
+            } else {
+                bpContent.innerHTML = '<div class="empty-state"><span>No breakpoints</span></div>';
+            }
+            
+            const watchContent = document.getElementById('watches-content');
+            const watchExprs = d.watches || [];
+            const watchVals = d.watch_values || {};
+            if (watchExprs.length > 0) {
+                let html = '';
+                for (const expr of watchExprs) {
+                    const val = watchVals[expr];
+                    html += `<div class="watch-item"><span class="watch-expr">${escapeHtml(expr)}</span><span class="watch-val">${val ? escapeHtml(val.value) : ''}</span></div>`;
+                }
+                watchContent.innerHTML = html;
+            } else {
+                watchContent.innerHTML = '<div class="empty-state"><span>No watches</span></div>';
+            }
+            
+            const varsContent = document.getElementById('variables-content');
+            const variables = d.variables || {};
+            const varKeys = Object.keys(variables);
+            if (varKeys.length > 0) {
+                let html = '<table class="var-table"><thead><tr><th>Name</th><th>Value</th><th>Type</th></tr></thead><tbody>';
+                for (const name of varKeys) {
+                    const info = variables[name];
+                    html += `<tr><td class="var-name">${escapeHtml(name)}</td><td class="var-value">${escapeHtml(String(info.value).substring(0, 100))}</td><td class="var-type">${escapeHtml(info.type || '')}</td></tr>`;
+                }
+                html += '</tbody></table>';
+                varsContent.innerHTML = html;
+            } else {
+                varsContent.innerHTML = '<div class="empty-state"><span>No variables</span></div>';
+            }
+            
+            const outputContent = document.getElementById('output-content');
+            const outputs = d.output || [];
+            if (outputs.length > 0) {
+                let html = '';
+                for (const o of outputs) {
+                    const cls = o.category === 'stderr' ? 'output-line stderr' : 'output-line stdout';
+                    html += `<div class="${cls}">${escapeHtml(o.output)}</div>`;
+                }
+                outputContent.innerHTML += html;
+                outputContent.scrollTop = outputContent.scrollHeight;
+            }
+        }
+        
+        connect();
+    </script>
+</body>
+</html>
