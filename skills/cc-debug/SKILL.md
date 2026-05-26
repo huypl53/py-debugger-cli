@@ -29,11 +29,29 @@ cc-debug quit
 
 **IMPORTANT:** Always call `cc-debug quit` when done debugging. This cleanly shuts down the daemon and debugpy processes. Forgetting to quit leaves orphan processes running.
 
+## Critical Debugging Workflows
+
+To prevent the debugger or target application from hanging or remaining paused indefinitely, you **MUST** choose the correct workflow path based on your target program type:
+
+### Pattern A: CLI Scripts (Stop-on-Entry)
+*Use this when debugging a standard script from start to finish, or when you need to step through initial setup/imports.*
+1. **Start the session**: `cc-debug start script.py --uv` (the program automatically pauses on line 1).
+2. **Set your breakpoints**: `cc-debug bp set script.py:42`
+3. **CRITICAL - Resume Execution**: `cc-debug continue` (or `next`/`step`). The target application **will remain paused on line 1 indefinitely** and will never run or hit breakpoints until you issue this command. Forgetting this step makes the script appear "hung".
+
+### Pattern B: Web Servers & Daemons (No-Stop)
+*Use this for FastAPI, Uvicorn, Flask, Django, celery workers, or any long-running service.*
+1. **Start the server with `--no-stop`**: `cc-debug start server.py --uv --no-stop` (the server initializes and starts listening on ports immediately without stopping).
+2. **Stream server logs**: `cc-debug output -f &` (run in background or a separate terminal so you can see the server's print/log output).
+3. **Set your breakpoints**: `cc-debug bp set handler.py:25`
+4. **Trigger execution**: Send HTTP requests (via `curl` or python `urllib`) or trigger the background tasks. The debugger will automatically halt execution when the breakpoint line is executed.
+
 > [!TIP]
 > **Debugging Web Servers (FastAPI, Uvicorn, Flask, etc.)**:
 > Always use the `--no-stop` flag when starting web servers or API services:
 > `cc-debug start server.py --uv --no-stop`
 > This allows the server to initialize and start serving immediately. Otherwise, the app stops on entry (line 1), and sending `continue` may block or time out if the initialization takes a long time.
+
 
 ## Debugging Different Venvs
 
