@@ -70,14 +70,17 @@ def _start_daemon() -> int:
 
     session_dir = get_session_dir()
     session_dir.mkdir(parents=True, exist_ok=True)
+    log_file = session_dir / "daemon.log"
+    # Open log file in append mode, unbuffered or line-buffered
+    log_fp = open(log_file, "a", buffering=1)
 
     # Start daemon process
     daemon_module = Path(__file__).parent.parent / "daemon_main.py"
     proc = subprocess.Popen(
         [sys.executable, str(daemon_module), str(port)],
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_fp,
+        stderr=log_fp,
         start_new_session=True,
     )
 
@@ -192,11 +195,15 @@ def _ensure_debugpy_in_venv(venv_python: Path) -> bool:
 @click.command()
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--args", default="", help="Arguments to pass to the program")
-@click.option("--no-stop", is_flag=True, help="Don't stop on entry")
+@click.option("--no-stop", is_flag=True, help="Don't stop on entry (recommended for web servers like FastAPI/Uvicorn)")
 @click.option("--python", "python_path", default=None, help="Python interpreter for target (e.g., .venv/bin/python)")
 @click.option("--uv", "use_uv", is_flag=True, help="Auto-detect project venv and install debugpy")
 def start(file: str, args: str, no_stop: bool, python_path: str | None, use_uv: bool) -> None:
     """Start debugging a Python file.
+
+    Use --no-stop when debugging web servers, API services, or long-running daemons
+    (e.g., FastAPI, Uvicorn, Flask) so the program starts serving immediately
+    without halting at the first line.
 
     Use --python to specify the interpreter for the target script,
     e.g., when the script needs packages from a specific venv.

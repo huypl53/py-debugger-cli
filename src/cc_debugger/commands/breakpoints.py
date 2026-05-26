@@ -34,6 +34,23 @@ def bp_set(location: str, condition: str | None, log_message: str | None, hit_co
         file = str(Path(file).resolve())
         line = int(line_str)
 
+        warning = None
+        try:
+            if Path(file).exists():
+                with open(file, "r", encoding="utf-8") as f:
+                    file_lines = f.readlines()
+                    if 1 <= line <= len(file_lines):
+                        line_content = file_lines[line - 1].strip()
+                        if line_content.startswith(("def ", "class ", "async def ")):
+                            warning = (
+                                f"Line {line} contains a function, method, or class definition ('{line_content}'). "
+                                "Breakpoints set on definition lines only trigger once when the module is loaded/imported, "
+                                "NOT when the function is called. To debug execution, please set the breakpoint on a line "
+                                "INSIDE the function body."
+                            )
+        except Exception:
+            pass
+
         if file not in _breakpoints:
             _breakpoints[file] = []
 
@@ -59,7 +76,7 @@ def bp_set(location: str, condition: str | None, log_message: str | None, hit_co
 
         bp_type = "log" if log_message else "breakpoint"
 
-        output_json(format_success("bp set", {
+        response_data = {
             "id": len(_breakpoints[file]) - 1,
             "file": file,
             "line": line,
@@ -68,7 +85,11 @@ def bp_set(location: str, condition: str | None, log_message: str | None, hit_co
             "hitCondition": str(hit_count) if hit_count else None,
             "type": bp_type,
             "verified": True,
-        }))
+        }
+        if warning:
+            response_data["warning"] = warning
+
+        output_json(format_success("bp set", response_data))
 
     except Exception as e:
         output_json(format_error("bp set", "BREAKPOINT_ERROR", str(e)))

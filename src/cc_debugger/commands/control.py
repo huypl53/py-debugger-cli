@@ -1,5 +1,8 @@
 """Execution control commands."""
 
+import sys
+from pathlib import Path
+
 import click
 
 from cc_debugger.commands.session import _send_to_daemon
@@ -11,6 +14,13 @@ def _format_step_result(result: dict, compact: bool = False) -> dict:
     # Print program output to stderr for user visibility
     if result.get("output"):
         print_program_output(result["output"])
+
+    if result.get("terminated"):
+        return {
+            "event": "terminated",
+            "reason": result.get("reason", "terminated"),
+            "exit_code": result.get("exit_code", 0),
+        }
 
     if compact:
         # Compact mode: minimal output for reduced tokens
@@ -136,6 +146,14 @@ def until(line: int) -> None:
         if result.get("output"):
             print_program_output(result["output"])
 
+        if result.get("terminated"):
+            output_json(format_success("until", {
+                "event": "terminated",
+                "reason": result.get("reason", "terminated"),
+                "exit_code": result.get("exit_code", 0),
+            }))
+            raise SystemExit(0)
+
         data = {
             "event": "stopped",
             "reason": result.get("reason"),
@@ -166,11 +184,30 @@ def run_to_cursor(location: str) -> None:
         if ":" not in location:
             raise ValueError("Location must be file:line (e.g., 'app.py:42')")
 
-        file, line = location.rsplit(":", 1)
+        file, line_str = location.rsplit(":", 1)
+        file_path = Path(file).resolve()
+        line = int(line_str)
+
+        try:
+            if file_path.exists():
+                with open(file_path, "r", encoding="utf-8") as f:
+                    file_lines = f.readlines()
+                    if 1 <= line <= len(file_lines):
+                        line_content = file_lines[line - 1].strip()
+                        if line_content.startswith(("def ", "class ", "async def ")):
+                            sys.stderr.write(
+                                f"Warning: Line {line} contains a function/class definition ('{line_content}'). "
+                                "Running to a definition line will likely not hit it if the module is already loaded. "
+                                "Consider running to a line inside the function body instead.\n"
+                            )
+                            sys.stderr.flush()
+        except Exception:
+            pass
+
         result = _send_to_daemon({
             "action": "run_to_cursor",
-            "file": file,
-            "line": int(line),
+            "file": str(file_path),
+            "line": line,
         }, timeout=None)
 
         if not result.get("success"):
@@ -182,6 +219,14 @@ def run_to_cursor(location: str) -> None:
         # Print program output to stderr for user visibility
         if result.get("output"):
             print_program_output(result["output"])
+
+        if result.get("terminated"):
+            output_json(format_success("run-to-cursor", {
+                "event": "terminated",
+                "reason": result.get("reason", "terminated"),
+                "exit_code": result.get("exit_code", 0),
+            }))
+            raise SystemExit(0)
 
         data = {
             "event": "stopped",

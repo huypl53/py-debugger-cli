@@ -29,6 +29,12 @@ cc-debug quit
 
 **IMPORTANT:** Always call `cc-debug quit` when done debugging. This cleanly shuts down the daemon and debugpy processes. Forgetting to quit leaves orphan processes running.
 
+> [!TIP]
+> **Debugging Web Servers (FastAPI, Uvicorn, Flask, etc.)**:
+> Always use the `--no-stop` flag when starting web servers or API services:
+> `cc-debug start server.py --uv --no-stop`
+> This allows the server to initialize and start serving immediately. Otherwise, the app stops on entry (line 1), and sending `continue` may block or time out if the initialization takes a long time.
+
 ## Debugging Different Venvs
 
 **Recommended: Use `--uv` flag** for automatic venv detection:

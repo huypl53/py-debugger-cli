@@ -136,43 +136,58 @@ class DebugSession:
                 self.thread_id = 1
             return {"body": {"reason": "running", "threadId": self.thread_id}}
 
+    def _handle_disconnect(self) -> None:
+        """Handle debugpy adapter disconnect."""
+        if self._running:
+            self._running = False
+            with self._events_lock:
+                self.events.put({
+                    "type": "event",
+                    "event": "terminated",
+                    "body": {"reason": "disconnect"}
+                })
+
     def _read_loop(self) -> None:
         """Background message reader."""
-        while self._running:
-            try:
-                if not self.sock_file:
-                    return
-                header = b""
-                while b"\r\n\r\n" not in header:
-                    b = self.sock_file.read(1)
-                    if not b:
+        try:
+            while self._running:
+                try:
+                    if not self.sock_file:
                         return
-                    header += b
+                    header = b""
+                    while b"\r\n\r\n" not in header:
+                        b = self.sock_file.read(1)
+                        if not b:
+                            self._handle_disconnect()
+                            return
+                        header += b
 
-                length = 0
-                for line in header.decode().split("\r\n"):
-                    if line.startswith("Content-Length:"):
-                        length = int(line.split(":")[1].strip())
-                        break
-                else:
-                    continue
+                    length = 0
+                    for line in header.decode().split("\r\n"):
+                        if line.startswith("Content-Length:"):
+                            length = int(line.split(":")[1].strip())
+                            break
+                    else:
+                        continue
 
-                body = self.sock_file.read(length).decode()
-                msg = json.loads(body)
+                    body = self.sock_file.read(length).decode()
+                    msg = json.loads(body)
 
-                mtype = msg.get("type")
+                    mtype = msg.get("type")
 
-                if mtype == "response":
-                    seq = msg.get("request_seq")
-                    if seq in self.pending:
-                        self.pending[seq].put(msg)
-                elif mtype == "event":
-                    with self._events_lock:
-                        self.events.put(msg)
-            except (json.JSONDecodeError, OSError, ValueError):
-                if self._running:
-                    continue
-                break
+                    if mtype == "response":
+                        seq = msg.get("request_seq")
+                        if seq in self.pending:
+                            self.pending[seq].put(msg)
+                    elif mtype == "event":
+                        with self._events_lock:
+                            self.events.put(msg)
+                except (json.JSONDecodeError, OSError, ValueError):
+                    if self._running:
+                        continue
+                    break
+        finally:
+            self._handle_disconnect()
 
     def _send(self, command: str, args: dict[str, Any]) -> int:
         """Send DAP request."""
@@ -216,6 +231,13 @@ class DebugSession:
                     for e in pending:
                         self.events.put(e)
                 return ev
+
+            if ev.get("event") in ("terminated", "exited"):
+                with self._events_lock:
+                    for e in pending:
+                        self.events.put(e)
+                return ev
+
             pending.append(ev)
 
     def send_and_wait(self, command: str, args: dict[str, Any], timeout: float = 30) -> dict[str, Any]:
@@ -594,6 +616,16 @@ class DaemonServer:
                 self.session._send("continue", {"threadId": self.session.thread_id})
                 ev = self.session._wait_event("stopped", timeout=None)
                 self._drain_output_events()
+                if ev.get("event") in ("terminated", "exited"):
+                    self.session.terminate()
+                    self.session = None
+                    return {
+                        "success": True,
+                        "terminated": True,
+                        "reason": ev.get("event"),
+                        "exit_code": ev.get("body", {}).get("exitCode", 0) if ev.get("event") == "exited" else 0,
+                        "output": list(self.output_buffer)
+                    }
                 self._last_stop_reason = ev["body"].get("reason", "breakpoint")
                 loc = self.session.get_location()
                 self._record_trace(loc)
@@ -616,6 +648,16 @@ class DaemonServer:
                 self._reset_frame_idx()
                 ev = self.session.step_and_wait("next")
                 self._drain_output_events()
+                if ev.get("event") in ("terminated", "exited"):
+                    self.session.terminate()
+                    self.session = None
+                    return {
+                        "success": True,
+                        "terminated": True,
+                        "reason": ev.get("event"),
+                        "exit_code": ev.get("body", {}).get("exitCode", 0) if ev.get("event") == "exited" else 0,
+                        "output": list(self.output_buffer)
+                    }
                 self._last_stop_reason = "step"
                 loc = self.session.get_location()
                 self._record_trace(loc)
@@ -637,6 +679,16 @@ class DaemonServer:
                 self._reset_frame_idx()
                 ev = self.session.step_and_wait("stepIn")
                 self._drain_output_events()
+                if ev.get("event") in ("terminated", "exited"):
+                    self.session.terminate()
+                    self.session = None
+                    return {
+                        "success": True,
+                        "terminated": True,
+                        "reason": ev.get("event"),
+                        "exit_code": ev.get("body", {}).get("exitCode", 0) if ev.get("event") == "exited" else 0,
+                        "output": list(self.output_buffer)
+                    }
                 self._last_stop_reason = "step"
                 loc = self.session.get_location()
                 self._record_trace(loc)
@@ -658,6 +710,16 @@ class DaemonServer:
                 self._reset_frame_idx()
                 ev = self.session.step_and_wait("stepOut")
                 self._drain_output_events()
+                if ev.get("event") in ("terminated", "exited"):
+                    self.session.terminate()
+                    self.session = None
+                    return {
+                        "success": True,
+                        "terminated": True,
+                        "reason": ev.get("event"),
+                        "exit_code": ev.get("body", {}).get("exitCode", 0) if ev.get("event") == "exited" else 0,
+                        "output": list(self.output_buffer)
+                    }
                 self._last_stop_reason = "step"
                 loc = self.session.get_location()
                 self._record_trace(loc)
@@ -748,6 +810,16 @@ class DaemonServer:
                     self.session._send("continue", {"threadId": self.session.thread_id})
                     ev = self.session._wait_event("stopped", timeout=None)
                     self._drain_output_events()
+                    if ev.get("event") in ("terminated", "exited"):
+                        self.session.terminate()
+                        self.session = None
+                        return {
+                            "success": True,
+                            "terminated": True,
+                            "reason": ev.get("event"),
+                            "exit_code": ev.get("body", {}).get("exitCode", 0) if ev.get("event") == "exited" else 0,
+                            "output": list(self.output_buffer)
+                        }
                     loc = self.session.get_location()
                     changed = self._detect_changes()
                     watches = self._eval_watches() if self.watches else {}
@@ -783,6 +855,16 @@ class DaemonServer:
                     self.session._send("continue", {"threadId": self.session.thread_id})
                     ev = self.session._wait_event("stopped", timeout=None)
                     self._drain_output_events()
+                    if ev.get("event") in ("terminated", "exited"):
+                        self.session.terminate()
+                        self.session = None
+                        return {
+                            "success": True,
+                            "terminated": True,
+                            "reason": ev.get("event"),
+                            "exit_code": ev.get("body", {}).get("exitCode", 0) if ev.get("event") == "exited" else 0,
+                            "output": list(self.output_buffer)
+                        }
                     new_loc = self.session.get_location()
                     changed = self._detect_changes()
                     watches = self._eval_watches() if self.watches else {}
@@ -1096,6 +1178,8 @@ class DaemonServer:
                 self.session._send("continue", {"threadId": self.session.thread_id})
                 try:
                     stop_ev = self.session._wait_event("stopped", timeout=30)
+                    if stop_ev.get("event") in ("terminated", "exited"):
+                        raise RuntimeError("Program terminated before hitting crash location")
                     loc = self.session.get_location()
                     source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))
                     return {

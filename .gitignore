@@ -57,3 +57,7 @@ htmlcov/
 
 # Docs (local only)
 docs/
+
+# Temp and tool configs
+scratch/
+.antigravitycli/

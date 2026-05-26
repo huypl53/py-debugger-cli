@@ -105,3 +105,39 @@ which cc-debug && cc-debug --version
 - `"source": "local"` only works for plugin-dir local installs, not marketplace
 - `"source": "github"` with `repo: "owner/repo"` not supported by Claude Code v2.1.132
 - Plugin skill directory structure: `.claude-plugin/skills/cc-debug/SKILL.md`
+
+---
+
+## Bug Fix: Daemon Event Loop Deadlock on Process Termination/Starvation (2026-05-26)
+
+**Category:** bug-fix
+**Root cause:** 
+- The debugger daemon's main thread blocked synchronously on `_wait_event("stopped", timeout=None)` during execution control commands (like `continue`).
+- When the target application has heavy initialization (e.g., uvicorn / fastapi with DB connections, LangGraph setup), the GIL/CPU starvation could cause the debugpy adapter connection to disconnect.
+- On disconnect or normal program exit, the adapter socket closed, causing the background reader thread to exit. However, the main thread remained deadlocked waiting on the `events` queue for a `"stopped"` event that would never arrive.
+- Subsequent client commands to the daemon failed with connection errors or timed out because the single-threaded daemon was hung.
+
+**Fix:**
+- Added `_handle_disconnect()` to `DebugSession` which runs when the adapter connection receives EOF or throws an error. It inserts a `"terminated"` event into the queue.
+- Updated `_wait_event()` to immediately return on `"terminated"` or `"exited"` events instead of blocking.
+- Handled `"terminated"` / `"exited"` results in the command handlers (`continue`, `next`, `step`, `stepout`, `until`, `run-to-cursor`) by cleanly terminating the debug session, clearing state, and returning a JSON success response indicating program termination.
+
+**Why it matters:** Prevents the debugger daemon from hanging forever and blocking all future CLI commands when the target process crashes, exits, or disconnects.
+
+---
+
+## Debugging Long Async Tasks & Web Servers (2026-05-26)
+
+**Category:** gotcha
+**Issue:** 
+- In Uvicorn/FastAPI applications, heavy sync startup initialization (e.g. DB connects, model loads) locks the GIL, causing `debugpy` adapter timeouts.
+- Background coroutines (scheduled via `asyncio.create_task`) run concurrently inside the async event loop and are fully traceable, but setting breakpoints on definition lines (e.g., `async def ...`) does not trigger debug pauses.
+- Interactive `breakpoint()` calls fail or deadlock in Uvicorn processes due to stdin redirection.
+
+**Solutions/Rules:**
+- Use `--no-stop` to bypass pause-on-entry and prevent initial startup timeouts/hangs.
+- Set line breakpoints *inside* the coroutine body (not on the `async def` definition line) to reliably capture the execution of async tasks.
+- Avoid using `breakpoint()` interactively. Rely on client CLI commands (`bp set`, `stack`, `vars`) or logging.
+
+**Why it matters:** Ensures developers can debug long-running async tasks and heavy web applications without triggering connection timeouts or missed breakpoints.
+
