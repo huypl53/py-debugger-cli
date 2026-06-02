@@ -225,7 +225,8 @@ def start(file: str, args: str, no_stop: bool, python_path: str | None, use_uv: 
                 else:
                     resolved_python = str(venv_python)
         elif python_path:
-            resolved_python = str(Path(python_path).resolve())
+            # Preserve the venv launcher path instead of resolving symlinks to the base interpreter.
+            resolved_python = str(Path(python_path).expanduser().absolute())
 
         # Stop any existing daemon
         _stop_daemon()
@@ -240,6 +241,7 @@ def start(file: str, args: str, no_stop: bool, python_path: str | None, use_uv: 
             "args": args.split() if args else [],
             "stop_on_entry": not no_stop,
             "python": resolved_python,
+            "cwd": os.getcwd(),
         })
 
         if not result.get("success"):
@@ -318,10 +320,13 @@ def status() -> None:
                 "message": "No active debug session",
             }))
         else:
-            output_json(format_success("status", {
+            response = {
                 "state": result.get("state"),
                 "location": result.get("location"),
-            }))
+            }
+            if result.get("reason"):
+                response["reason"] = result.get("reason")
+            output_json(format_success("status", response))
 
     except RuntimeError:
         output_json(format_success("status", {

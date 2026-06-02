@@ -36,7 +36,14 @@ class DebugSession:
         self.launch_args: list[str] = []
         self.stop_on_entry: bool = True
 
-    def start(self, target_file: str, args: list[str], stop_on_entry: bool = True, python_path: str | None = None) -> dict[str, Any]:
+    def start(
+        self,
+        target_file: str,
+        args: list[str],
+        stop_on_entry: bool = True,
+        python_path: str | None = None,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
         """Start debug session.
 
         Args:
@@ -49,6 +56,7 @@ class DebugSession:
         self.launch_args = args
         self.stop_on_entry = stop_on_entry
         self.python_path = python_path or sys.executable
+        self.cwd = cwd or str(Path(target_file).parent)
 
         # Find free port for adapter
         with socket.socket() as s:
@@ -104,13 +112,13 @@ class DebugSession:
         launch_config = {
             "program": target_file,
             "args": args,
-            "cwd": str(Path(target_file).parent),
+            "cwd": self.cwd,
             "stopOnEntry": stop_on_entry,
             "console": "internalConsole",
             "justMyCode": True,
         }
         if self.python_path != sys.executable:
-            launch_config["pythonPath"] = self.python_path
+            launch_config["python"] = [self.python_path]
         self._send("launch", launch_config)
         time.sleep(0.2)
 
@@ -290,6 +298,8 @@ class DaemonServer:
         self.port = port
         self.session = None
         self._running = False
+        self.execution_state: str = "no_session"
+        self.last_location: dict[str, Any] | None = None
         self.prev_vars: dict[str, tuple[str, str]] = {}  # name -> (type, value)
         self.watches: dict[str, str | None] = {}  # expression -> last value
         # Frame navigation state
@@ -318,6 +328,56 @@ class DaemonServer:
         self._prev_watch_values: dict[str, str | None] = {}
         # Track last changed vars from step commands
         self._last_changed_vars: list[str] = []
+
+    def _set_stopped_state(self, reason: str | None = None) -> None:
+        """Mark the debuggee as stopped and cache its current location."""
+        self.execution_state = "stopped"
+        if reason:
+            self._last_stop_reason = reason
+        if self.session:
+            self.last_location = self.session.get_location()
+
+    def _set_running_state(self) -> None:
+        """Mark the debuggee as running."""
+        self.execution_state = "running"
+
+    def _poll_session_events(self) -> None:
+        """Consume pending async events and update state."""
+        if not self.session:
+            self.execution_state = "no_session"
+            self.last_location = None
+            return
+
+        with self.session._events_lock:
+            pending = []
+            while True:
+                try:
+                    ev = self.session.events.get_nowait()
+                except Empty:
+                    break
+
+                event_type = ev.get("event")
+                if event_type == "output":
+                    self._capture_output(ev)
+                elif event_type == "stopped":
+                    thread_id = ev.get("body", {}).get("threadId")
+                    if thread_id:
+                        self.session.thread_id = thread_id
+                    self._set_stopped_state(ev.get("body", {}).get("reason", "breakpoint"))
+                elif event_type == "continued":
+                    self._set_running_state()
+                elif event_type in ("terminated", "exited"):
+                    self.session.terminate()
+                    self.session = None
+                    self.execution_state = "no_session"
+                    self.last_location = None
+                    break
+                else:
+                    pending.append(ev)
+
+            if self.session:
+                for ev in pending:
+                    self.session.events.put(ev)
 
     def _get_source_context(self, file: str, line: int, context: int = 5) -> list[dict]:
         """Get source lines around current location."""
@@ -581,17 +641,21 @@ class DaemonServer:
                     cmd.get("args", []),
                     stop_on_entry,
                     cmd.get("python"),
+                    cmd.get("cwd"),
                 )
                 reason = ev["body"].get("reason")
                 if reason == "running":
                     # Program is running (--no-stop), can't get location
+                    self._set_running_state()
+                    self.last_location = None
                     return {
                         "success": True,
                         "state": "running",
                         "message": "Program running. Set breakpoints and use 'pause' or wait for breakpoint hit.",
                         "thread_id": self.session.thread_id,
                     }
-                loc = self.session.get_location()
+                self._set_stopped_state(reason)
+                loc = self.last_location or {}
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))
                 return {
                     "success": True,
@@ -606,19 +670,33 @@ class DaemonServer:
             elif action == "status":
                 if not self.session:
                     return {"success": True, "state": "no_session"}
-                loc = self.session.get_location()
-                return {"success": True, "state": "stopped", "location": loc}
+                self._poll_session_events()
+                if not self.session:
+                    return {"success": True, "state": "no_session"}
+                if self.execution_state == "running":
+                    return {"success": True, "state": "running"}
+                loc = self.last_location or self.session.get_location()
+                self.last_location = loc
+                return {
+                    "success": True,
+                    "state": "stopped",
+                    "reason": self._last_stop_reason,
+                    "location": loc,
+                }
 
             elif action == "continue":
                 if not self.session:
                     return {"success": False, "error": "No session"}
                 self._reset_frame_idx()
+                self._set_running_state()
                 self.session._send("continue", {"threadId": self.session.thread_id})
                 ev = self.session._wait_event("stopped", timeout=None)
                 self._drain_output_events()
                 if ev.get("event") in ("terminated", "exited"):
                     self.session.terminate()
                     self.session = None
+                    self.execution_state = "no_session"
+                    self.last_location = None
                     return {
                         "success": True,
                         "terminated": True,
@@ -626,8 +704,8 @@ class DaemonServer:
                         "exit_code": ev.get("body", {}).get("exitCode", 0) if ev.get("event") == "exited" else 0,
                         "output": list(self.output_buffer)
                     }
-                self._last_stop_reason = ev["body"].get("reason", "breakpoint")
-                loc = self.session.get_location()
+                self._set_stopped_state(ev["body"].get("reason", "breakpoint"))
+                loc = self.last_location or {}
                 self._record_trace(loc)
                 changed = self._detect_changes()
                 self._last_changed_vars = list(changed)  # Save for vars --changed
@@ -646,11 +724,14 @@ class DaemonServer:
                 if not self.session:
                     return {"success": False, "error": "No session"}
                 self._reset_frame_idx()
+                self._set_running_state()
                 ev = self.session.step_and_wait("next")
                 self._drain_output_events()
                 if ev.get("event") in ("terminated", "exited"):
                     self.session.terminate()
                     self.session = None
+                    self.execution_state = "no_session"
+                    self.last_location = None
                     return {
                         "success": True,
                         "terminated": True,
@@ -658,8 +739,8 @@ class DaemonServer:
                         "exit_code": ev.get("body", {}).get("exitCode", 0) if ev.get("event") == "exited" else 0,
                         "output": list(self.output_buffer)
                     }
-                self._last_stop_reason = "step"
-                loc = self.session.get_location()
+                self._set_stopped_state(ev["body"].get("reason", "step"))
+                loc = self.last_location or {}
                 self._record_trace(loc)
                 changed = self._detect_changes()
                 self._last_changed_vars = list(changed)
@@ -677,11 +758,14 @@ class DaemonServer:
                 if not self.session:
                     return {"success": False, "error": "No session"}
                 self._reset_frame_idx()
+                self._set_running_state()
                 ev = self.session.step_and_wait("stepIn")
                 self._drain_output_events()
                 if ev.get("event") in ("terminated", "exited"):
                     self.session.terminate()
                     self.session = None
+                    self.execution_state = "no_session"
+                    self.last_location = None
                     return {
                         "success": True,
                         "terminated": True,
@@ -689,8 +773,8 @@ class DaemonServer:
                         "exit_code": ev.get("body", {}).get("exitCode", 0) if ev.get("event") == "exited" else 0,
                         "output": list(self.output_buffer)
                     }
-                self._last_stop_reason = "step"
-                loc = self.session.get_location()
+                self._set_stopped_state(ev["body"].get("reason", "step"))
+                loc = self.last_location or {}
                 self._record_trace(loc)
                 changed = self._detect_changes()
                 self._last_changed_vars = list(changed)  # Save for vars --changed
@@ -708,11 +792,14 @@ class DaemonServer:
                 if not self.session:
                     return {"success": False, "error": "No session"}
                 self._reset_frame_idx()
+                self._set_running_state()
                 ev = self.session.step_and_wait("stepOut")
                 self._drain_output_events()
                 if ev.get("event") in ("terminated", "exited"):
                     self.session.terminate()
                     self.session = None
+                    self.execution_state = "no_session"
+                    self.last_location = None
                     return {
                         "success": True,
                         "terminated": True,
@@ -720,8 +807,8 @@ class DaemonServer:
                         "exit_code": ev.get("body", {}).get("exitCode", 0) if ev.get("event") == "exited" else 0,
                         "output": list(self.output_buffer)
                     }
-                self._last_stop_reason = "step"
-                loc = self.session.get_location()
+                self._set_stopped_state(ev["body"].get("reason", "step"))
+                loc = self.last_location or {}
                 self._record_trace(loc)
                 changed = self._detect_changes()
                 self._last_changed_vars = list(changed)  # Save for vars --changed
@@ -1152,6 +1239,7 @@ class DaemonServer:
                 return {"success": True, "trace": trace, "count": len(trace), "trace_active": self.trace_active}
 
             elif action == "output":
+                self._poll_session_events()
                 self._drain_output_events()
                 clear = cmd.get("clear", False)
                 lines = list(self.output_buffer)
@@ -1172,6 +1260,8 @@ class DaemonServer:
                 self._reset_frame_idx()
                 self.breakpoints.clear()
                 self.temp_breakpoints.clear()
+                self.execution_state = "no_session"
+                self.last_location = None
                 ev = self.session.start(crash_file, [], stop_on_entry=True)
                 self.breakpoints[crash_file] = [{"line": crash_line}]
                 self._sync_breakpoints(crash_file)
@@ -1180,7 +1270,8 @@ class DaemonServer:
                     stop_ev = self.session._wait_event("stopped", timeout=30)
                     if stop_ev.get("event") in ("terminated", "exited"):
                         raise RuntimeError("Program terminated before hitting crash location")
-                    loc = self.session.get_location()
+                    self._set_stopped_state(stop_ev["body"].get("reason", "breakpoint"))
+                    loc = self.last_location or {}
                     source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))
                     return {
                         "success": True,
@@ -1218,7 +1309,8 @@ class DaemonServer:
                 self.prev_vars.clear()
                 self.session = DebugSession()
                 ev = self.session.start(target_file, args, stop_on_entry)
-                loc = self.session.get_location()
+                self._set_stopped_state(ev["body"].get("reason", "entry"))
+                loc = self.last_location or {}
                 source_ctx = self._get_source_context(loc.get("file", ""), loc.get("line", 0))
                 return {
                     "success": True,
@@ -1349,6 +1441,8 @@ class DaemonServer:
                 if self.session:
                     self.session.terminate()
                     self.session = None
+                self.execution_state = "no_session"
+                self.last_location = None
                 self._running = False
                 return {"success": True, "message": "Session terminated"}
 

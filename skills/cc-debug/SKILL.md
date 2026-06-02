@@ -45,12 +45,15 @@ To prevent the debugger or target application from hanging or remaining paused i
 2. **Stream server logs**: `cc-debug output -f &` (run in background or a separate terminal so you can see the server's print/log output).
 3. **Set your breakpoints**: `cc-debug bp set handler.py:25`
 4. **Trigger execution**: Send HTTP requests (via `curl` or python `urllib`) or trigger the background tasks. The debugger will automatically halt execution when the breakpoint line is executed.
+5. **Resume intentionally**: after inspecting a breakpoint hit, use `cc-debug continue` only when you deliberately want to wait for the *next* stop. For long-running servers, `continue` is a blocking command and usually will not return until another breakpoint/exception is hit or the process exits.
 
 > [!TIP]
 > **Debugging Web Servers (FastAPI, Uvicorn, Flask, etc.)**:
 > Always use the `--no-stop` flag when starting web servers or API services:
 > `cc-debug start server.py --uv --no-stop`
 > This allows the server to initialize and start serving immediately. Otherwise, the app stops on entry (line 1), and sending `continue` may block or time out if the initialization takes a long time.
+>
+> After a breakpoint hit in a server, `cc-debug continue` resumes execution **and then waits** for the next stop. Do not expect it to "resume and return immediately". If you only need to let the request finish, run `continue` in a separate terminal/session or be prepared for the command to stay blocked.
 
 
 ## Debugging Different Venvs
@@ -88,6 +91,8 @@ cc-debug pm <traceback-file>             # Post-mortem from crash
 ```
 
 **For servers/long-running programs:** Use `--no-stop` - returns immediately with `state: "running"`. Set breakpoints to stop at specific lines.
+
+**Blocking behavior:** `cc-debug continue` is a blocking command. For scripts, that is usually what you want. For long-running servers, it means the caller will wait until the next breakpoint/exception/termination, so do not use it as a fire-and-forget resume command.
 
 ## Execution Control
 
@@ -236,9 +241,12 @@ cc-debug bp set server.py:100
 cc-debug vars
 cc-debug stack
 
-# 6. Always quit when done
+# 6. Resume request processing when ready
+# WARNING: this blocks until the next stop, so use a separate terminal/session if needed
+cc-debug continue
+
+# 7. Always quit when done
 cc-debug quit
 ```
 
 **Note:** Without `output -f`, server stdout/stderr is invisible. Always stream logs when debugging servers.
-
