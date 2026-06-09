@@ -7,6 +7,7 @@ from cc_debugger.commands.record import record
 from cc_debugger.commands.session import quit_cmd, start, status
 from cc_debugger.commands.time_travel import goto, step_back, step_forward
 from cc_debugger.commands.watch import watch
+from cc_debugger.commands.help import help_cmd
 
 __all__ = [
     "start",
@@ -26,4 +27,5 @@ __all__ = [
     "step_back",
     "step_forward",
     "goto",
+    "help_cmd",
 ]

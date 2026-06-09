@@ -10,6 +10,7 @@ from cc_debugger.commands.session import pm, quit_cmd, restart, start, status
 from cc_debugger.commands.trace import trace
 from cc_debugger.commands.time_travel import goto, step_back, step_forward
 from cc_debugger.commands.watch import watch
+from cc_debugger.commands.help import help_cmd
 
 
 @click.group()
@@ -76,6 +77,9 @@ main.add_command(pm)
 
 # Why command
 main.add_command(why)
+
+# Help command
+main.add_command(help_cmd, name="help")
 
 
 if __name__ == "__main__":

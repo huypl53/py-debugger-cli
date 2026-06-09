@@ -127,6 +127,8 @@ cc-debug quit                                      # End session
 cc-debug status                                    # Show session state
 cc-debug restart [--args "..."]                    # Restart with same/new args
 cc-debug pm <traceback-file>                       # Post-mortem debug from crash
+cc-debug help                                      # Show detailed usage guide
+cc-debug help <command>                            # Show help for a specific command
 ```
 
 **Recommended:** Use `--uv` flag for projects with their own venv - it auto-detects the venv and installs debugpy if needed.

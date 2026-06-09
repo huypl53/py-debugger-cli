@@ -88,6 +88,8 @@ cc-debug quit                            # End session
 cc-debug status                          # Show state
 cc-debug restart [--args "..."]          # Restart session
 cc-debug pm <traceback-file>             # Post-mortem from crash
+cc-debug help                            # Show detailed usage guide
+cc-debug help <command>                  # Show help for specific command
 ```
 
 **For servers/long-running programs:** Use `--no-stop` - returns immediately with `state: "running"`. Set breakpoints to stop at specific lines.
